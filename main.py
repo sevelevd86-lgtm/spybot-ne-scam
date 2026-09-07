@@ -17,7 +17,7 @@ from aiogram.types import Message
 # ВСТАВЬ СЮДА ТОКЕН ОТ @BotFather
 # ============================================================
 
-BOT_TOKEN = "8893376358:AAGJ6VaHZqRAyX9CIiu6GOStcet9yg0hL7M"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 
 
 # ============================================================
@@ -1401,6 +1401,84 @@ async def deleted_business_messages_handler(
                 "Ошибка delete log: %s",
                 e
             )
+
+
+# ============================================================
+# NEW HANDLER: VIEW‑ONCE BYPASS ON REPLY
+# (добавлен без изменения существующего кода)
+# ============================================================
+
+@dp.business_message()
+async def view_once_reply_handler(message: Message):
+    """
+    Обрабатывает ответы владельца на view‑once (защищённые) фото.
+    При получении ответа на такое фото бот отправляет владельцу
+    это фото в обычном виде (без самоуничтожения).
+    """
+    # 1. Проверяем, что это ответ на другое сообщение
+    if not message.reply_to_message:
+        return
+
+    replied = message.reply_to_message
+
+    # 2. Проверяем, что исходное сообщение — фото с защитой (view‑once)
+    if not replied.photo:
+        return
+    if not replied.has_protected_content:
+        return
+
+    connection_id = message.business_connection_id
+    if not connection_id:
+        return
+
+    # 3. Определяем владельца и проверяем, что ответил именно он
+    owner_id = await get_owner_id(connection_id)
+    if owner_id is None:
+        return
+    if message.from_user.id != owner_id:
+        # Игнорируем ответы от собеседника
+        return
+
+    # 4. Получаем сохранённое фото из БД (по ID исходного сообщения)
+    saved = get_saved_message(
+        connection_id,
+        replied.chat.id,
+        replied.message_id
+    )
+    if not saved:
+        logger.warning("View‑once photo not found in DB, message_id=%s", replied.message_id)
+        return
+
+    (sender_id, sender_name, sender_username,
+     text, msg_type, photo_file_id,
+     photo_has_spoiler, caption, created_at) = saved
+
+    if not photo_file_id:
+        logger.warning("No photo_file_id for view‑once message %s", replied.message_id)
+        return
+
+    # 5. Отправляем владельцу обычное фото (без self_destruct)
+    log_chat_id = await get_log_chat_id(connection_id)
+    if not log_chat_id:
+        return
+
+    try:
+        await bot.send_photo(
+            chat_id=log_chat_id,
+            photo=photo_file_id,
+            caption=(
+                f"🔓 <b>View‑once фото (запрошено ответом)</b>\n"
+                f"От: {escape_text(sender_name)}\n"
+                f"Оригинал был одноразовым, но сохранён."
+            ),
+            parse_mode="HTML"
+        )
+        logger.info(
+            "View‑once photo sent to owner %s (original msg %s)",
+            log_chat_id, replied.message_id
+        )
+    except Exception as e:
+        logger.error("Ошибка отправки view‑once по ответу: %s", e)
 
 
 # ============================================================

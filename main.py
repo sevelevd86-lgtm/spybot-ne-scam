@@ -13,7 +13,7 @@ from aiogram.types import Message
 #                         CONFIG
 # ============================================================
 
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+BOT_TOKEN = "8893376358:AAGJ6VaHZqRAyX9CIiu6GOStcet9yg0hL7M"
 
 
 # ============================================================

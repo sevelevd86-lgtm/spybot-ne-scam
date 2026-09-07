@@ -14,7 +14,7 @@ from aiogram.types import Message
 # ============================================================
 
 # ВСТАВЬ СЮДА ТОКЕН БОТА ИЗ BOTFATHER
-BOT_TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_БОТА"
+BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
 
 DATABASE_FILE = "business_monitor.db"
 

@@ -1,11 +1,8 @@
 import asyncio
 import html
 import logging
-import os
 import sqlite3
 from datetime import datetime, timezone
-
-from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
@@ -13,22 +10,11 @@ from aiogram.types import Message
 
 
 # ============================================================
-# ENVIRONMENT
-# ============================================================
-
-load_dotenv()
-
-BOT_TOKEN = ("8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c")
-
-if not BOT_TOKEN:
-    raise RuntimeError(
-        "Переменная окружения BOT_TOKEN не найдена!"
-    )
-
-
-# ============================================================
 # CONFIG
 # ============================================================
+
+# ВСТАВЬ СЮДА ТОКЕН БОТА ИЗ BOTFATHER
+BOT_TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_БОТА"
 
 DATABASE_FILE = "business_monitor.db"
 
@@ -68,13 +54,21 @@ db = sqlite3.connect(
 db.execute("""
 CREATE TABLE IF NOT EXISTS business_connections (
     connection_id TEXT PRIMARY KEY,
+
     user_id INTEGER NOT NULL,
+
     user_chat_id INTEGER NOT NULL,
+
     first_name TEXT,
+
     last_name TEXT,
+
     username TEXT,
+
     is_enabled INTEGER DEFAULT 1,
+
     created_at TEXT,
+
     updated_at TEXT
 )
 """)
@@ -84,22 +78,29 @@ CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     connection_id TEXT NOT NULL,
+
     chat_id INTEGER NOT NULL,
+
     message_id INTEGER NOT NULL,
 
     sender_id INTEGER,
+
     sender_name TEXT,
+
     sender_username TEXT,
 
     text TEXT,
+
     message_type TEXT,
 
     photo_file_id TEXT,
+
     photo_has_spoiler INTEGER DEFAULT 0,
 
     caption TEXT,
 
     created_at TEXT,
+
     updated_at TEXT,
 
     UNIQUE (
@@ -253,21 +254,30 @@ def save_business_connection(connection):
         ON CONFLICT(connection_id)
 
         DO UPDATE SET
+
             user_id = excluded.user_id,
             user_chat_id = excluded.user_chat_id,
+
             first_name = excluded.first_name,
             last_name = excluded.last_name,
             username = excluded.username,
+
             is_enabled = excluded.is_enabled,
+
             updated_at = excluded.updated_at
     """, (
         connection.id,
+
         user.id,
+
         connection.user_chat_id,
+
         user.first_name,
         user.last_name,
         user.username,
+
         1 if connection.is_enabled else 0,
+
         timestamp,
         timestamp
     ))
@@ -279,12 +289,15 @@ def get_connection(connection_id):
 
     cursor = db.execute("""
         SELECT
+
             connection_id,
             user_id,
             user_chat_id,
+
             first_name,
             last_name,
             username,
+
             is_enabled
 
         FROM business_connections
@@ -299,7 +312,9 @@ def get_connection(connection_id):
     return cursor.fetchone()
 
 
-async def get_business_connection(connection_id):
+async def get_business_connection(
+    connection_id
+):
 
     saved = get_connection(
         connection_id
@@ -333,7 +348,9 @@ async def get_business_connection(connection_id):
         return None
 
 
-async def get_owner_id(connection_id):
+async def get_owner_id(
+    connection_id
+):
 
     connection = await get_business_connection(
         connection_id
@@ -345,7 +362,9 @@ async def get_owner_id(connection_id):
     return connection[1]
 
 
-async def get_log_chat_id(connection_id):
+async def get_log_chat_id(
+    connection_id
+):
 
     connection = await get_business_connection(
         connection_id
@@ -379,6 +398,7 @@ def save_message(
     )
 
     photo_file_id = None
+
     photo_has_spoiler = 0
 
     # --------------------------------------------------------
@@ -406,6 +426,7 @@ def save_message(
 
     db.execute("""
         INSERT INTO messages (
+
             connection_id,
             chat_id,
             message_id,
@@ -427,11 +448,17 @@ def save_message(
         )
 
         VALUES (
+
             ?, ?, ?,
+
             ?, ?, ?,
+
             ?, ?,
+
             ?, ?,
+
             ?,
+
             ?, ?
         )
 
@@ -457,6 +484,7 @@ def save_message(
 
             updated_at = excluded.updated_at
     """, (
+
         connection_id,
         message.chat.id,
         message.message_id,
@@ -561,6 +589,7 @@ async def start_handler(
 ):
 
     await message.answer(
+
         "🕵️ <b>Business Message Monitor</b>\n\n"
 
         "✅ Бот работает.\n\n"
@@ -635,6 +664,7 @@ async def business_connection_handler(
         if connection.is_enabled:
 
             text = (
+
                 "🟢 <b>Business Bot подключён</b>\n\n"
 
                 f"👤 Аккаунт:\n"
@@ -649,6 +679,7 @@ async def business_connection_handler(
         else:
 
             text = (
+
                 "🔴 <b>Business Bot отключён</b>\n\n"
 
                 f"👤 Аккаунт:\n"
@@ -659,8 +690,11 @@ async def business_connection_handler(
             )
 
         await bot.send_message(
+
             connection.user_chat_id,
+
             text,
+
             parse_mode="HTML"
         )
 
@@ -696,7 +730,7 @@ async def business_message_handler(
         return
 
     # --------------------------------------------------------
-    # Владелец
+    # Получаем владельца
     # --------------------------------------------------------
 
     owner_id = await get_owner_id(
@@ -707,12 +741,15 @@ async def business_message_handler(
         return
 
     # --------------------------------------------------------
-    # Отправитель
+    # Получаем отправителя
     # --------------------------------------------------------
 
     sender_id = (
+
         message.from_user.id
+
         if message.from_user
+
         else None
     )
 
@@ -726,7 +763,9 @@ async def business_message_handler(
     )
 
     logger.info(
-        "NEW | connection=%s chat=%s message=%s sender=%s type=%s",
+        "NEW | connection=%s chat=%s message=%s "
+        "sender=%s type=%s",
+
         connection_id,
         message.chat.id,
         message.message_id,
@@ -735,13 +774,17 @@ async def business_message_handler(
     )
 
     # --------------------------------------------------------
-    # Не отправляем сообщения владельца
+    # Сообщения владельца не логируем
     # --------------------------------------------------------
 
     if (
+
         sender_id is not None
+
         and sender_id == owner_id
+
     ):
+
         return
 
     # ========================================================
@@ -758,17 +801,26 @@ async def business_message_handler(
             return
 
         sender_info = format_sender(
+
             sender_id,
+
             message.from_user.full_name
+
             if message.from_user
+
             else "Неизвестный пользователь",
+
             message.from_user.username
+
             if message.from_user
+
             else None
         )
 
         caption_text = (
+
             message.caption
+
             or "Без подписи"
         )
 
@@ -785,6 +837,7 @@ async def business_message_handler(
             )
 
         log_caption = (
+
             f"{title}\n\n"
 
             f"👤 <b>Отправитель:</b>\n"
@@ -803,15 +856,23 @@ async def business_message_handler(
         try:
 
             await bot.send_photo(
+
                 chat_id=log_chat_id,
+
                 photo=message.photo[-1].file_id,
+
                 caption=log_caption,
+
                 parse_mode="HTML",
+
                 has_spoiler=False
             )
 
             logger.info(
-                "PHOTO SENT | connection=%s message=%s",
+
+                "PHOTO SENT | "
+                "connection=%s message=%s",
+
                 connection_id,
                 message.message_id
             )
@@ -819,7 +880,9 @@ async def business_message_handler(
         except Exception as e:
 
             logger.exception(
+
                 "Ошибка отправки нового фото: %s",
+
                 e
             )
 
@@ -833,12 +896,16 @@ async def business_message_handler(
         return
 
     replied_message_id = (
+
         message.reply_to_message.message_id
     )
 
     saved = get_saved_message(
+
         connection_id,
+
         message.chat.id,
+
         replied_message_id
     )
 
@@ -846,6 +913,7 @@ async def business_message_handler(
         return
 
     (
+
         saved_sender_id,
         saved_sender_name,
         saved_sender_username,
@@ -866,8 +934,11 @@ async def business_message_handler(
     # ========================================================
 
     if (
+
         message_type == "photo"
+
         and photo_file_id
+
     ):
 
         log_chat_id = await get_log_chat_id(
@@ -878,13 +949,16 @@ async def business_message_handler(
             return
 
         sender_info = format_sender(
+
             saved_sender_id,
             saved_sender_name,
             saved_sender_username
         )
 
         caption_text = (
+
             caption
+
             or "Без подписи"
         )
 
@@ -901,6 +975,7 @@ async def business_message_handler(
             )
 
         log_caption = (
+
             f"{title}\n\n"
 
             f"👤 <b>Отправитель:</b>\n"
@@ -921,22 +996,32 @@ async def business_message_handler(
         try:
 
             await bot.send_photo(
+
                 chat_id=log_chat_id,
+
                 photo=photo_file_id,
+
                 caption=log_caption,
+
                 parse_mode="HTML",
+
                 has_spoiler=False
             )
 
             logger.info(
-                "REPLY PHOTO SENT | original=%s",
+
+                "REPLY PHOTO SENT | "
+                "original=%s",
+
                 replied_message_id
             )
 
         except Exception as e:
 
             logger.exception(
+
                 "Ошибка отправки фото по reply: %s",
+
                 e
             )
 
@@ -961,8 +1046,11 @@ async def edited_business_message_handler(
         return
 
     old = get_saved_message(
+
         connection_id,
+
         message.chat.id,
+
         message.message_id
     )
 
@@ -985,25 +1073,35 @@ async def edited_business_message_handler(
 
             caption,
             created_at
+
         ) = old
 
     else:
 
         sender_id = (
+
             message.from_user.id
+
             if message.from_user
+
             else None
         )
 
         sender_name = (
+
             message.from_user.full_name
+
             if message.from_user
+
             else "Неизвестный пользователь"
         )
 
         sender_username = (
+
             message.from_user.username
+
             if message.from_user
+
             else None
         )
 
@@ -1012,12 +1110,15 @@ async def edited_business_message_handler(
         )
 
     # --------------------------------------------------------
-    # Владелец
+    # Изменения владельца не логируем
     # --------------------------------------------------------
 
     if (
+
         owner_id is not None
+
         and sender_id == owner_id
+
     ):
 
         save_message(
@@ -1026,19 +1127,25 @@ async def edited_business_message_handler(
         )
 
         logger.info(
+
             "EDIT IGNORED: owner message=%s",
+
             message.message_id
         )
 
         return
 
     new_text = (
+
         get_message_text(message)
+
         or "[сообщение без текста]"
     )
 
     old_text = (
+
         old_text
+
         or "[сообщение без текста]"
     )
 
@@ -1059,12 +1166,14 @@ async def edited_business_message_handler(
         return
 
     sender_info = format_sender(
+
         sender_id,
         sender_name,
         sender_username
     )
 
     log_text = (
+
         "✏️ <b>СООБЩЕНИЕ ИЗМЕНЕНО</b>\n\n"
 
         f"👤 <b>Собеседник:</b>\n"
@@ -1077,22 +1186,34 @@ async def edited_business_message_handler(
         f"<code>{message.message_id}</code>\n\n"
 
         "🔴 <b>БЫЛО:</b>\n"
-        f"<blockquote>{escape_text(old_text)}</blockquote>\n\n"
+
+        f"<blockquote>"
+        f"{escape_text(old_text)}"
+        f"</blockquote>\n\n"
 
         "🟢 <b>СТАЛО:</b>\n"
-        f"<blockquote>{escape_text(new_text)}</blockquote>"
+
+        f"<blockquote>"
+        f"{escape_text(new_text)}"
+        f"</blockquote>"
     )
 
     try:
 
         await bot.send_message(
+
             log_chat_id,
+
             log_text,
+
             parse_mode="HTML"
         )
 
         logger.info(
-            "EDIT LOG | connection=%s message=%s",
+
+            "EDIT LOG | "
+            "connection=%s message=%s",
+
             connection_id,
             message.message_id
         )
@@ -1140,24 +1261,28 @@ async def deleted_business_messages_handler(
         return
 
     # ========================================================
-    # ВСЕ УДАЛЁННЫЕ СООБЩЕНИЯ
+    # ВСЕ УДАЛЁННЫЕ MESSAGE ID
     # ========================================================
 
     for message_id in event.message_ids:
 
         saved = get_saved_message(
+
             connection_id,
+
             chat_id,
+
             message_id
         )
 
         # ====================================================
-        # НЕТ В БАЗЕ
+        # НЕ НАЙДЕНО
         # ====================================================
 
         if not saved:
 
             log_text = (
+
                 "🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>\n\n"
 
                 f"💬 <b>Чат:</b> "
@@ -1173,21 +1298,27 @@ async def deleted_business_messages_handler(
             try:
 
                 await bot.send_message(
+
                     log_chat_id,
+
                     log_text,
+
                     parse_mode="HTML"
                 )
 
             except Exception as e:
 
                 logger.exception(
+
                     "Ошибка unknown delete log: %s",
+
                     e
                 )
 
             continue
 
         (
+
             sender_id,
             sender_name,
             sender_username,
@@ -1200,25 +1331,32 @@ async def deleted_business_messages_handler(
 
             caption,
             created_at
+
         ) = saved
 
         # ====================================================
-        # НЕ ЛОГИРУЕМ СООБЩЕНИЯ ВЛАДЕЛЬЦА
+        # ВЛАДЕЛЬЦА НЕ ЛОГИРУЕМ
         # ====================================================
 
         if (
+
             owner_id is not None
+
             and sender_id == owner_id
+
         ):
 
             logger.info(
+
                 "DELETE IGNORED: owner message=%s",
+
                 message_id
             )
 
             continue
 
         sender_info = format_sender(
+
             sender_id,
             sender_name,
             sender_username
@@ -1229,12 +1367,17 @@ async def deleted_business_messages_handler(
         # ====================================================
 
         if (
+
             message_type == "photo"
+
             and photo_file_id
+
         ):
 
             caption_text = (
+
                 caption
+
                 or "Без подписи"
             )
 
@@ -1251,6 +1394,7 @@ async def deleted_business_messages_handler(
                 )
 
             log_caption = (
+
                 f"{title}\n\n"
 
                 f"👤 <b>Собеседник:</b>\n"
@@ -1269,6 +1413,7 @@ async def deleted_business_messages_handler(
             try:
 
                 await bot.send_photo(
+
                     chat_id=log_chat_id,
 
                     photo=photo_file_id,
@@ -1281,8 +1426,10 @@ async def deleted_business_messages_handler(
                 )
 
                 logger.info(
+
                     "DELETED PHOTO SENT | "
                     "connection=%s message=%s",
+
                     connection_id,
                     message_id
                 )
@@ -1290,7 +1437,9 @@ async def deleted_business_messages_handler(
             except Exception as e:
 
                 logger.exception(
+
                     "Ошибка отправки удалённого фото: %s",
+
                     e
                 )
 
@@ -1303,11 +1452,14 @@ async def deleted_business_messages_handler(
         if not message_text:
 
             message_text = (
+
                 f"[{message_type}] "
+
                 "сообщение без текста"
             )
 
         log_text = (
+
             "🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>\n\n"
 
             f"👤 <b>Собеседник:</b>\n"
@@ -1332,13 +1484,19 @@ async def deleted_business_messages_handler(
         try:
 
             await bot.send_message(
+
                 log_chat_id,
+
                 log_text,
+
                 parse_mode="HTML"
             )
 
             logger.info(
-                "DELETE LOG | connection=%s message=%s",
+
+                "DELETE LOG | "
+                "connection=%s message=%s",
+
                 connection_id,
                 message_id
             )
@@ -1346,7 +1504,9 @@ async def deleted_business_messages_handler(
         except Exception as e:
 
             logger.exception(
+
                 "Ошибка delete log: %s",
+
                 e
             )
 
@@ -1370,11 +1530,15 @@ async def main():
     )
 
     logger.info(
-        "BOT_TOKEN loaded from environment"
+        "BOT TOKEN: MANUAL CONFIG"
     )
 
     logger.info(
-        "PHOTO + DELETE PHOTO MONITOR ENABLED"
+        "PHOTO MONITOR ENABLED"
+    )
+
+    logger.info(
+        "DELETE PHOTO MONITOR ENABLED"
     )
 
     logger.info(
@@ -1386,13 +1550,19 @@ async def main():
     )
 
     await dp.start_polling(
+
         bot,
 
         allowed_updates=[
+
             "message",
+
             "business_connection",
+
             "business_message",
+
             "edited_business_message",
+
             "deleted_business_messages"
         ]
     )

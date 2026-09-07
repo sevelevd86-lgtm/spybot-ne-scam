@@ -14,7 +14,7 @@ from aiogram.types import Message
 # ============================================================
 
 # Токен, который выдал @BotFather
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+BOT_TOKEN = "8893376358:AAGJ6VaHZqRAyX9CIiu6GOStcet9yg0hL7M"
 
 # Telegram ID, куда отправлять логи.
 #
@@ -23,7 +23,7 @@ BOT_TOKEN = "YOUR_BOT_TOKEN"
 #
 # Узнать свой ID можно через специального Telegram-бота
 # или временно вывести message.from_user.id в консоль.
-LOG_CHAT_ID = 123456789
+LOG_CHAT_ID = 5018476227
 
 
 # Файл базы данных.

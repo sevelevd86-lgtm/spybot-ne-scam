@@ -13,7 +13,7 @@ from aiogram.types import Message
 #                         CONFIG
 # ============================================================
 
-BOT_TOKEN = "8893376358:AAGJ6VaHZqRAyX9CIiu6GOStcet9yg0hL7M"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 
 
 # ============================================================
@@ -139,120 +139,58 @@ db.commit()
 # ============================================================
 
 def now_iso():
-    """
-    Текущее время UTC.
-    """
-
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def escape_text(text):
-    """
-    Экранируем пользовательский текст
-    перед отправкой с parse_mode=HTML.
-    """
-
-    return html.escape(
-        str(text or "")
-    )
+    return html.escape(str(text or ""))
 
 
 def get_message_text(message):
-    """
-    Получаем текст сообщения или подпись к медиа.
-    """
-
     if message.text:
         return message.text
-
     if message.caption:
         return message.caption
-
     return ""
 
 
 def get_sender_info(message):
-    """
-    Возвращает:
-        sender_id
-        sender_name
-        sender_username
-    """
-
     if not message.from_user:
-
-        return (
-            None,
-            "Неизвестный пользователь",
-            None
-        )
-
+        return (None, "Неизвестный пользователь", None)
     user = message.from_user
-
-    return (
-        user.id,
-        user.full_name or "Без имени",
-        user.username
-    )
+    return (user.id, user.full_name or "Без имени", user.username)
 
 
 def get_message_type(message):
-    """
-    Определяем тип сообщения.
-    """
-
     if message.photo:
         return "photo"
-
     if message.video:
         return "video"
-
     if message.animation:
         return "animation"
-
     if message.document:
         return "document"
-
     if message.audio:
         return "audio"
-
     if message.voice:
         return "voice"
-
     if message.video_note:
         return "video_note"
-
     if message.sticker:
         return "sticker"
-
     if message.location:
         return "location"
-
     if message.contact:
         return "contact"
-
     if message.poll:
         return "poll"
-
     if message.text:
         return "text"
-
     return "other"
 
 
 def is_private_message(message):
-    """
-    Жёсткая проверка.
-
-    Разрешаем только обычные личные чаты.
-    """
-
-    return (
-        message.chat is not None
-        and message.chat.type == "private"
-    )
+    return message.chat is not None and message.chat.type == "private"
 
 
 # ============================================================
@@ -260,15 +198,7 @@ def is_private_message(message):
 # ============================================================
 
 def save_business_connection(connection):
-    """
-    Сохраняем подключение Business-аккаунта.
-
-    Один бот может быть подключён к нескольким аккаунтам.
-    Поэтому каждое подключение имеет свой connection_id.
-    """
-
     user = connection.user
-
     db.execute("""
         INSERT INTO business_connections (
             connection_id,
@@ -281,11 +211,7 @@ def save_business_connection(connection):
             created_at,
             updated_at
         )
-
-        VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?
-        )
-
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(connection_id)
         DO UPDATE SET
             user_id = excluded.user_id,
@@ -297,29 +223,19 @@ def save_business_connection(connection):
             updated_at = excluded.updated_at
     """, (
         connection.id,
-
         user.id,
-
         connection.user_chat_id,
-
         user.first_name,
         user.last_name,
         user.username,
-
         1 if connection.is_enabled else 0,
-
         now_iso(),
         now_iso()
     ))
-
     db.commit()
 
 
 def get_connection(connection_id):
-    """
-    Получаем Business Connection из БД.
-    """
-
     cursor = db.execute("""
         SELECT
             connection_id,
@@ -332,93 +248,36 @@ def get_connection(connection_id):
         FROM business_connections
         WHERE connection_id = ?
         LIMIT 1
-    """, (
-        connection_id,
-    ))
-
+    """, (connection_id,))
     return cursor.fetchone()
 
 
-async def get_business_connection(
-    connection_id
-):
-    """
-    Получаем Business Connection.
-
-    Сначала пытаемся взять его из БД.
-    Если нет — запрашиваем у Telegram.
-    """
-
-    saved = get_connection(
-        connection_id
-    )
-
+async def get_business_connection(connection_id):
+    saved = get_connection(connection_id)
     if saved:
-
         return saved
-
     try:
-
-        connection = (
-            await bot.get_business_connection(
-                business_connection_id=connection_id
-            )
+        connection = await bot.get_business_connection(
+            business_connection_id=connection_id
         )
-
-        save_business_connection(
-            connection
-        )
-
-        return get_connection(
-            connection_id
-        )
-
+        save_business_connection(connection)
+        return get_connection(connection_id)
     except Exception as e:
-
-        logger.error(
-            "Не удалось получить Business Connection %s: %s",
-            connection_id,
-            e
-        )
-
+        logger.error("Не удалось получить Business Connection %s: %s", connection_id, e)
         return None
 
 
-async def get_owner_id(
-    connection_id
-):
-    """
-    Возвращает Telegram ID владельца
-    конкретного Business Connection.
-    """
-
-    connection = await get_business_connection(
-        connection_id
-    )
-
+async def get_owner_id(connection_id):
+    connection = await get_business_connection(connection_id)
     if not connection:
         return None
-
     return connection[1]
 
 
-async def get_log_chat_id(
-    connection_id
-):
-    """
-    Возвращает приватный chat_id владельца.
-
-    Логи каждого аккаунта отправляются
-    только владельцу этого подключения.
-    """
-
-    connection = await get_business_connection(
-        connection_id
-    )
-
+async def get_log_chat_id(connection_id):
+    connection = await get_business_connection(connection_id)
     if not connection:
         return None
-
     return connection[2]
 
 
@@ -426,58 +285,17 @@ async def get_log_chat_id(
 # MESSAGE DATABASE
 # ============================================================
 
-def save_message(
-    connection_id,
-    message
-):
-    """
-    Сохраняем сообщение.
-
-    Нам нужны эти данные для восстановления
-    удалённых сообщений и фотографий.
-    """
-
-    sender_id, sender_name, sender_username = (
-        get_sender_info(message)
-    )
-
-    message_type = get_message_type(
-        message
-    )
-
-    text = get_message_text(
-        message
-    )
-
+def save_message(connection_id, message):
+    sender_id, sender_name, sender_username = get_sender_info(message)
+    message_type = get_message_type(message)
+    text = get_message_text(message)
     photo_file_id = None
-
     photo_has_spoiler = 0
-
-    # --------------------------------------------------------
-    # ФОТО
-    # --------------------------------------------------------
-
     if message.photo:
-
-        # Самое большое доступное разрешение.
-        photo_file_id = (
-            message.photo[-1].file_id
-        )
-
-        # Проверяем наличие Telegram spoiler.
-        photo_has_spoiler = (
-            1
-            if message.has_media_spoiler
-            else 0
-        )
-
-    caption = (
-        message.caption
-        or ""
-    )
-
+        photo_file_id = message.photo[-1].file_id
+        photo_has_spoiler = 1 if message.has_media_spoiler else 0
+    caption = message.caption or ""
     timestamp = now_iso()
-
     db.execute("""
         INSERT INTO messages (
             connection_id,
@@ -494,18 +312,8 @@ def save_message(
             created_at,
             updated_at
         )
-
-        VALUES (
-            ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?
-        )
-
-        ON CONFLICT(
-            connection_id,
-            chat_id,
-            message_id
-        )
-
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(connection_id, chat_id, message_id)
         DO UPDATE SET
             sender_id = excluded.sender_id,
             sender_name = excluded.sender_name,
@@ -518,44 +326,23 @@ def save_message(
             updated_at = excluded.updated_at
     """, (
         connection_id,
-
         message.chat.id,
-
         message.message_id,
-
         sender_id,
-
         sender_name,
-
         sender_username,
-
         text,
-
         message_type,
-
         photo_file_id,
-
         photo_has_spoiler,
-
         caption,
-
         timestamp,
-
         timestamp
     ))
-
     db.commit()
 
 
-def get_saved_message(
-    connection_id,
-    chat_id,
-    message_id
-):
-    """
-    Ищем ранее сохранённое сообщение.
-    """
-
+def get_saved_message(connection_id, chat_id, message_id):
     cursor = db.execute("""
         SELECT
             sender_id,
@@ -568,20 +355,11 @@ def get_saved_message(
             caption,
             created_at
         FROM messages
-
         WHERE connection_id = ?
-
         AND chat_id = ?
-
         AND message_id = ?
-
         LIMIT 1
-    """, (
-        connection_id,
-        chat_id,
-        message_id
-    ))
-
+    """, (connection_id, chat_id, message_id))
     return cursor.fetchone()
 
 
@@ -589,74 +367,39 @@ def get_saved_message(
 # SENDER FORMAT
 # ============================================================
 
-def format_sender(
-    sender_id,
-    sender_name,
-    sender_username
-):
-    """
-    Красивое отображение отправителя.
-    """
-
-    result = (
-        f"<b>{escape_text(sender_name)}</b>"
-    )
-
+def format_sender(sender_id, sender_name, sender_username):
+    result = f"<b>{escape_text(sender_name)}</b>"
     if sender_username:
-
-        result += (
-            f" (@{escape_text(sender_username)})"
-        )
-
+        result += f" (@{escape_text(sender_username)})"
     if sender_id:
-
-        result += (
-            f"\nID: <code>{sender_id}</code>"
-        )
-
+        result += f"\nID: <code>{sender_id}</code>"
     return result
 
 
 # ============================================================
-# /START
+# /START  (ИЗМЕНЕН)
 # ============================================================
 
-@dp.message(
-    CommandStart()
-)
-async def start_handler(
-    message: Message
-):
-    """
-    Команда /start.
-    """
-
+@dp.message(CommandStart())
+async def start_handler(message: Message):
     await message.answer(
         "🕵️ <b>Business Message Monitor</b>\n\n"
-
-        "Бот работает.\n\n"
-
+        "✅ Бот работает.\n\n"
         "Подключи меня через:\n"
-
         "<b>Настройки Telegram → "
         "Telegram Business → "
         "Автоматизация чатов</b>\n\n"
-
-        "После подключения я буду "
-        "обрабатывать разрешённые личные чаты.\n\n"
-
+        "После подключения я буду обрабатывать разрешённые личные чаты.\n\n"
+        "📋 <b>Возможности:</b>\n"
         "🗑 Удалённые сообщения\n"
         "✏️ Редактирование\n"
         "📷 Фотографии\n"
-        "🫥 Фото со спойлером",
-
+        "🫥 Фото со спойлером\n"
+        "🔓 <b>Показывает одноразовые (view‑once) фото</b> — "
+        "автоматически присылает их владельцу как обычные.",
         parse_mode="HTML"
     )
-
-    logger.info(
-        "/start: %s",
-        message.from_user.id
-    )
+    logger.info("/start: %s", message.from_user.id)
 
 
 # ============================================================
@@ -664,260 +407,85 @@ async def start_handler(
 # ============================================================
 
 @dp.business_connection()
-async def business_connection_handler(
-    connection
-):
-    """
-    Подключение / изменение / отключение
-    Business аккаунта.
-    """
+async def business_connection_handler(connection):
+    logger.info("========================================")
+    logger.info("BUSINESS CONNECTION")
+    logger.info("connection_id=%s", connection.id)
+    logger.info("user_id=%s", connection.user.id)
+    logger.info("user_chat_id=%s", connection.user_chat_id)
+    logger.info("enabled=%s", connection.is_enabled)
 
-    logger.info(
-        "========================================"
-    )
-
-    logger.info(
-        "BUSINESS CONNECTION"
-    )
-
-    logger.info(
-        "connection_id=%s",
-        connection.id
-    )
-
-    logger.info(
-        "user_id=%s",
-        connection.user.id
-    )
-
-    logger.info(
-        "user_chat_id=%s",
-        connection.user_chat_id
-    )
-
-    logger.info(
-        "enabled=%s",
-        connection.is_enabled
-    )
-
-    # --------------------------------------------------------
-    # Сохраняем подключение
-    # --------------------------------------------------------
-
-    save_business_connection(
-        connection
-    )
-
-    # --------------------------------------------------------
-    # Уведомляем владельца
-    # --------------------------------------------------------
+    save_business_connection(connection)
 
     try:
-
         if connection.is_enabled:
-
             text = (
                 "🟢 <b>Business Bot подключён</b>\n\n"
-
-                f"👤 Аккаунт:\n"
-                f"{escape_text(connection.user.full_name)}\n\n"
-
-                f"🆔 ID:\n"
-                f"<code>{connection.user.id}</code>\n\n"
-
-                "Теперь я буду обрабатывать "
-                "разрешённые личные чаты."
+                f"👤 Аккаунт:\n{escape_text(connection.user.full_name)}\n\n"
+                f"🆔 ID:\n<code>{connection.user.id}</code>\n\n"
+                "Теперь я буду обрабатывать разрешённые личные чаты."
             )
-
         else:
-
             text = (
                 "🔴 <b>Business Bot отключён</b>\n\n"
-
-                f"👤 Аккаунт:\n"
-                f"{escape_text(connection.user.full_name)}\n\n"
-
-                f"🆔 ID:\n"
-                f"<code>{connection.user.id}</code>"
+                f"👤 Аккаунт:\n{escape_text(connection.user.full_name)}\n\n"
+                f"🆔 ID:\n<code>{connection.user.id}</code>"
             )
-
-        await bot.send_message(
-            connection.user_chat_id,
-            text,
-            parse_mode="HTML"
-        )
-
+        await bot.send_message(connection.user_chat_id, text, parse_mode="HTML")
     except Exception as e:
-
-        logger.error(
-            "Ошибка connection notification: %s",
-            e
-        )
+        logger.error("Ошибка connection notification: %s", e)
 
 
 # ============================================================
-# NEW BUSINESS MESSAGE
+# NEW BUSINESS MESSAGE (основной)
 # ============================================================
 
 @dp.business_message()
-async def business_message_handler(
-    message: Message
-):
-    """
-    Новое сообщение в подключённом Business аккаунте.
-    """
-
-    # --------------------------------------------------------
-    # Только ЛС
-    # --------------------------------------------------------
-
+async def business_message_handler(message: Message):
     if not is_private_message(message):
-
         return
-
-    connection_id = (
-        message.business_connection_id
-    )
-
+    connection_id = message.business_connection_id
     if not connection_id:
-
         return
 
-    # --------------------------------------------------------
-    # Сохраняем сообщение
-    # --------------------------------------------------------
-
-    save_message(
-        connection_id,
-        message
-    )
-
-    logger.info(
-        "NEW | connection=%s chat=%s message=%s type=%s",
-        connection_id,
-        message.chat.id,
-        message.message_id,
-        get_message_type(message)
-    )
-
-    # ========================================================
-    # ПРОВЕРКА REPLY
-    # ========================================================
+    save_message(connection_id, message)
+    logger.info("NEW | connection=%s chat=%s message=%s type=%s",
+                connection_id, message.chat.id, message.message_id, get_message_type(message))
 
     if not message.reply_to_message:
-
         return
 
-    replied_message_id = (
-        message.reply_to_message.message_id
-    )
-
-    # --------------------------------------------------------
-    # Ищем сообщение, на которое ответили
-    # --------------------------------------------------------
-
-    saved = get_saved_message(
-        connection_id,
-        message.chat.id,
-        replied_message_id
-    )
-
+    replied_message_id = message.reply_to_message.message_id
+    saved = get_saved_message(connection_id, message.chat.id, replied_message_id)
     if not saved:
-
         return
 
-    (
-        sender_id,
-        sender_name,
-        sender_username,
-        old_text,
-        message_type,
-        photo_file_id,
-        photo_has_spoiler,
-        caption,
-        created_at
-    ) = saved
+    (sender_id, sender_name, sender_username,
+     old_text, message_type, photo_file_id,
+     photo_has_spoiler, caption, created_at) = saved
 
-    # ========================================================
-    # СКРЫТОЕ ФОТО
-    # ========================================================
-
-    if (
-        message_type == "photo"
-        and photo_file_id
-        and photo_has_spoiler
-    ):
-
-        log_chat_id = await get_log_chat_id(
-            connection_id
-        )
-
+    if message_type == "photo" and photo_file_id and photo_has_spoiler:
+        log_chat_id = await get_log_chat_id(connection_id)
         if not log_chat_id:
-
             return
-
-        sender_info = format_sender(
-            sender_id,
-            sender_name,
-            sender_username
-        )
-
-        caption_text = (
-            caption
-            or "Без подписи"
-        )
-
+        sender_info = format_sender(sender_id, sender_name, sender_username)
+        caption_text = caption or "Без подписи"
         log_caption = (
             "🫥 <b>СКРЫТОЕ ФОТО</b>\n\n"
-
-            f"👤 <b>Отправитель:</b>\n"
-            f"{sender_info}\n\n"
-
-            f"💬 <b>Чат:</b> "
-            f"<code>{message.chat.id}</code>\n"
-
-            f"🆔 <b>Message ID:</b> "
-            f"<code>{replied_message_id}</code>\n\n"
-
+            f"👤 <b>Отправитель:</b>\n{sender_info}\n\n"
+            f"💬 <b>Чат:</b> <code>{message.chat.id}</code>\n"
+            f"🆔 <b>Message ID:</b> <code>{replied_message_id}</code>\n\n"
             "📷 На скрытое фото ответили.\n\n"
-
-            f"📝 <b>Подпись:</b>\n"
-            f"{escape_text(caption_text)}"
+            f"📝 <b>Подпись:</b>\n{escape_text(caption_text)}"
         )
-
         try:
-
-            # ------------------------------------------------
-            # Отправляем обычное фото БЕЗ спойлера.
-            #
-            # Это относится только к обычному Telegram
-            # media spoiler, а не к исчезающим фотографиям.
-            # ------------------------------------------------
-
-            await bot.send_photo(
-                log_chat_id,
-
-                photo_file_id,
-
-                caption=log_caption,
-
-                parse_mode="HTML",
-
-                has_spoiler=False
-            )
-
-            logger.info(
-                "Spoiler photo sent: message=%s owner=%s",
-                replied_message_id,
-                log_chat_id
-            )
-
+            await bot.send_photo(log_chat_id, photo_file_id,
+                                 caption=log_caption,
+                                 parse_mode="HTML",
+                                 has_spoiler=False)
+            logger.info("Spoiler photo sent: message=%s owner=%s", replied_message_id, log_chat_id)
         except Exception as e:
-
-            logger.error(
-                "Ошибка отправки spoiler photo: %s",
-                e
-            )
+            logger.error("Ошибка отправки spoiler photo: %s", e)
 
 
 # ============================================================
@@ -925,214 +493,59 @@ async def business_message_handler(
 # ============================================================
 
 @dp.edited_business_message()
-async def edited_business_message_handler(
-    message: Message
-):
-    """
-    Сообщение было изменено.
-
-    ВАЖНО:
-
-    Если сообщение принадлежит владельцу
-    Business аккаунта — ничего не отправляем.
-
-    Логируем только изменения собеседника.
-    """
-
-    # --------------------------------------------------------
-    # Только ЛС
-    # --------------------------------------------------------
-
+async def edited_business_message_handler(message: Message):
     if not is_private_message(message):
-
         return
-
-    connection_id = (
-        message.business_connection_id
-    )
-
+    connection_id = message.business_connection_id
     if not connection_id:
-
         return
 
-    # --------------------------------------------------------
-    # Ищем старую версию
-    # --------------------------------------------------------
-
-    old = get_saved_message(
-        connection_id,
-        message.chat.id,
-        message.message_id
-    )
-
-    # --------------------------------------------------------
-    # Получаем ID владельца
-    # --------------------------------------------------------
-
-    owner_id = await get_owner_id(
-        connection_id
-    )
-
-    # --------------------------------------------------------
-    # Если сообщение есть в БД
-    # --------------------------------------------------------
+    old = get_saved_message(connection_id, message.chat.id, message.message_id)
+    owner_id = await get_owner_id(connection_id)
 
     if old:
-
-        (
-            sender_id,
-            sender_name,
-            sender_username,
-            old_text,
-            message_type,
-            photo_file_id,
-            photo_has_spoiler,
-            caption,
-            created_at
-        ) = old
-
+        (sender_id, sender_name, sender_username,
+         old_text, message_type, photo_file_id,
+         photo_has_spoiler, caption, created_at) = old
     else:
+        sender_id = message.from_user.id if message.from_user else None
+        sender_name = message.from_user.full_name if message.from_user else "Неизвестный пользователь"
+        sender_username = message.from_user.username if message.from_user else None
+        old_text = "[Старая версия не сохранена]"
 
-        sender_id = (
-            message.from_user.id
-            if message.from_user
-            else None
-        )
-
-        sender_name = (
-            message.from_user.full_name
-            if message.from_user
-            else "Неизвестный пользователь"
-        )
-
-        sender_username = (
-            message.from_user.username
-            if message.from_user
-            else None
-        )
-
-        old_text = (
-            "[Старая версия не сохранена]"
-        )
-
-    # ========================================================
-    # НЕ ЛОГИРУЕМ СОБСТВЕННЫЕ СООБЩЕНИЯ
-    # ========================================================
-
-    if (
-        owner_id is not None
-        and sender_id == owner_id
-    ):
-
-        # Обновляем запись,
-        # но НЕ отправляем лог.
-        save_message(
-            connection_id,
-            message
-        )
-
-        logger.info(
-            "EDIT IGNORED: owner message=%s",
-            message.message_id
-        )
-
+    if owner_id is not None and sender_id == owner_id:
+        save_message(connection_id, message)
+        logger.info("EDIT IGNORED: owner message=%s", message.message_id)
         return
 
-    # --------------------------------------------------------
-    # Новая версия
-    # --------------------------------------------------------
-
-    new_text = get_message_text(
-        message
-    )
-
-    if not new_text:
-
-        new_text = "[сообщение без текста]"
-
-    if not old_text:
-
-        old_text = "[сообщение без текста]"
-
-    # --------------------------------------------------------
-    # Получаем чат владельца
-    # --------------------------------------------------------
-
-    log_chat_id = await get_log_chat_id(
-        connection_id
-    )
-
+    new_text = get_message_text(message) or "[сообщение без текста]"
+    old_text = old_text or "[сообщение без текста]"
+    log_chat_id = await get_log_chat_id(connection_id)
     if not log_chat_id:
-
         return
-
-    # --------------------------------------------------------
-    # Если содержимое не изменилось
-    # --------------------------------------------------------
 
     if old_text == new_text:
-
-        save_message(
-            connection_id,
-            message
-        )
-
+        save_message(connection_id, message)
         return
 
-    sender_info = format_sender(
-        sender_id,
-        sender_name,
-        sender_username
-    )
-
+    sender_info = format_sender(sender_id, sender_name, sender_username)
     log_text = (
         "✏️ <b>СООБЩЕНИЕ ИЗМЕНЕНО</b>\n\n"
-
-        f"👤 <b>Собеседник:</b>\n"
-        f"{sender_info}\n\n"
-
-        f"💬 <b>Чат:</b> "
-        f"<code>{message.chat.id}</code>\n"
-
-        f"🆔 <b>Message ID:</b> "
-        f"<code>{message.message_id}</code>\n\n"
-
+        f"👤 <b>Собеседник:</b>\n{sender_info}\n\n"
+        f"💬 <b>Чат:</b> <code>{message.chat.id}</code>\n"
+        f"🆔 <b>Message ID:</b> <code>{message.message_id}</code>\n\n"
         "🔴 <b>БЫЛО:</b>\n"
         f"<blockquote>{escape_text(old_text)}</blockquote>\n\n"
-
         "🟢 <b>СТАЛО:</b>\n"
         f"<blockquote>{escape_text(new_text)}</blockquote>"
     )
-
     try:
-
-        await bot.send_message(
-            log_chat_id,
-            log_text,
-            parse_mode="HTML"
-        )
-
-        logger.info(
-            "EDIT LOG: connection=%s message=%s",
-            connection_id,
-            message.message_id
-        )
-
+        await bot.send_message(log_chat_id, log_text, parse_mode="HTML")
+        logger.info("EDIT LOG: connection=%s message=%s", connection_id, message.message_id)
     except Exception as e:
+        logger.error("Ошибка edit log: %s", e)
 
-        logger.error(
-            "Ошибка edit log: %s",
-            e
-        )
-
-    # --------------------------------------------------------
-    # Обновляем БД
-    # --------------------------------------------------------
-
-    save_message(
-        connection_id,
-        message
-    )
+    save_message(connection_id, message)
 
 
 # ============================================================
@@ -1140,310 +553,125 @@ async def edited_business_message_handler(
 # ============================================================
 
 @dp.deleted_business_messages()
-async def deleted_business_messages_handler(
-    event
-):
-    """
-    Обработка удалённых сообщений.
-
-    ВАЖНО:
-
-    Telegram сообщает только ID удалённых сообщений.
-
-    Поэтому текст/фото берём из SQLite.
-
-    Также проверяем sender_id:
-    если сообщение было отправлено владельцем
-    Business аккаунта — лог НЕ отправляется.
-    """
-
-    # --------------------------------------------------------
-    # Только ЛС
-    # --------------------------------------------------------
-
+async def deleted_business_messages_handler(event):
     if event.chat.type != "private":
-
         return
-
-    connection_id = (
-        event.business_connection_id
-    )
-
+    connection_id = event.business_connection_id
     chat_id = event.chat.id
-
-    # --------------------------------------------------------
-    # Получаем ID владельца
-    # --------------------------------------------------------
-
-    owner_id = await get_owner_id(
-        connection_id
-    )
-
-    # --------------------------------------------------------
-    # Получаем чат владельца
-    # --------------------------------------------------------
-
-    log_chat_id = await get_log_chat_id(
-        connection_id
-    )
-
+    owner_id = await get_owner_id(connection_id)
+    log_chat_id = await get_log_chat_id(connection_id)
     if not log_chat_id:
-
         return
-
-    # ========================================================
-    # ОБРАБОТКА ВСЕХ УДАЛЁННЫХ MESSAGE ID
-    # ========================================================
 
     for message_id in event.message_ids:
-
-        saved = get_saved_message(
-            connection_id,
-            chat_id,
-            message_id
-        )
-
-        # ====================================================
-        # НЕТ В БАЗЕ
-        # ====================================================
-
+        saved = get_saved_message(connection_id, chat_id, message_id)
         if not saved:
-
-            # ------------------------------------------------
-            # Если Telegram не дал нам данные отправителя,
-            # мы не можем надёжно определить, был ли это
-            # владелец.
-            #
-            # В этом случае отправляем технический лог.
-            # ------------------------------------------------
-
             log_text = (
                 "🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>\n\n"
-
-                f"💬 Чат: "
-                f"<code>{chat_id}</code>\n"
-
-                f"🆔 Message ID: "
-                f"<code>{message_id}</code>\n\n"
-
+                f"💬 Чат: <code>{chat_id}</code>\n"
+                f"🆔 Message ID: <code>{message_id}</code>\n\n"
                 "⚠️ <b>Текст не удалось восстановить.</b>\n\n"
-
                 "Сообщение отсутствовало в локальной базе."
             )
-
             try:
-
-                await bot.send_message(
-                    log_chat_id,
-                    log_text,
-                    parse_mode="HTML"
-                )
-
+                await bot.send_message(log_chat_id, log_text, parse_mode="HTML")
             except Exception as e:
-
-                logger.error(
-                    "Ошибка unknown delete log: %s",
-                    e
-                )
-
+                logger.error("Ошибка unknown delete log: %s", e)
             continue
 
-        # ====================================================
-        # ЕСТЬ В БАЗЕ
-        # ====================================================
+        (sender_id, sender_name, sender_username,
+         message_text, message_type, photo_file_id,
+         photo_has_spoiler, caption, created_at) = saved
 
-        (
-            sender_id,
-            sender_name,
-            sender_username,
-            message_text,
-            message_type,
-            photo_file_id,
-            photo_has_spoiler,
-            caption,
-            created_at
-        ) = saved
-
-        # ----------------------------------------------------
-        # НЕ ЛОГИРУЕМ СОБСТВЕННОЕ УДАЛЕНИЕ
-        # ----------------------------------------------------
-
-        if (
-            owner_id is not None
-            and sender_id == owner_id
-        ):
-
-            logger.info(
-                "DELETE IGNORED: owner message=%s",
-                message_id
-            )
-
+        if owner_id is not None and sender_id == owner_id:
+            logger.info("DELETE IGNORED: owner message=%s", message_id)
             continue
 
-        sender_info = format_sender(
-            sender_id,
-            sender_name,
-            sender_username
-        )
+        sender_info = format_sender(sender_id, sender_name, sender_username)
 
-        # ====================================================
-        # УДАЛЁННАЯ ФОТОГРАФИЯ
-        # ====================================================
-
-        if (
-            message_type == "photo"
-            and photo_file_id
-        ):
-
-            caption_text = (
-                caption
-                or "Без подписи"
-            )
-
+        if message_type == "photo" and photo_file_id:
+            caption_text = caption or "Без подписи"
             log_caption = (
                 "🗑 <b>ФОТО УДАЛЕНО</b>\n\n"
-
-                f"👤 <b>Собеседник:</b>\n"
-                f"{sender_info}\n\n"
-
-                f"💬 <b>Чат:</b> "
-                f"<code>{chat_id}</code>\n"
-
-                f"🆔 <b>Message ID:</b> "
-                f"<code>{message_id}</code>\n\n"
-
-                f"📝 <b>Подпись:</b>\n"
-                f"{escape_text(caption_text)}"
+                f"👤 <b>Собеседник:</b>\n{sender_info}\n\n"
+                f"💬 <b>Чат:</b> <code>{chat_id}</code>\n"
+                f"🆔 <b>Message ID:</b> <code>{message_id}</code>\n\n"
+                f"📝 <b>Подпись:</b>\n{escape_text(caption_text)}"
             )
-
             try:
-
-                await bot.send_photo(
-                    log_chat_id,
-
-                    photo_file_id,
-
-                    caption=log_caption,
-
-                    parse_mode="HTML",
-
-                    # В логе показываем обычное фото.
-                    has_spoiler=False
-                )
-
-                logger.info(
-                    "DELETE PHOTO LOG: %s",
-                    message_id
-                )
-
+                await bot.send_photo(log_chat_id, photo_file_id,
+                                     caption=log_caption,
+                                     parse_mode="HTML",
+                                     has_spoiler=False)
+                logger.info("DELETE PHOTO LOG: %s", message_id)
             except Exception as e:
-
-                logger.error(
-                    "Ошибка отправки deleted photo: %s",
-                    e
-                )
-
+                logger.error("Ошибка отправки deleted photo: %s", e)
             continue
 
-        # ====================================================
-        # УДАЛЁННОЕ ТЕКСТОВОЕ СООБЩЕНИЕ
-        # ====================================================
-
         if not message_text:
-
-            message_text = (
-                f"[{message_type}] "
-                "сообщение без текста"
-            )
-
+            message_text = f"[{message_type}] сообщение без текста"
         log_text = (
             "🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>\n\n"
-
-            f"👤 <b>Собеседник:</b>\n"
-            f"{sender_info}\n\n"
-
-            f"💬 <b>Чат:</b> "
-            f"<code>{chat_id}</code>\n"
-
-            f"🆔 <b>Message ID:</b> "
-            f"<code>{message_id}</code>\n\n"
-
+            f"👤 <b>Собеседник:</b>\n{sender_info}\n\n"
+            f"💬 <b>Чат:</b> <code>{chat_id}</code>\n"
+            f"🆔 <b>Message ID:</b> <code>{message_id}</code>\n\n"
             "📄 <b>Содержимое:</b>\n"
-            f"<blockquote>"
-            f"{escape_text(message_text)}"
-            f"</blockquote>\n\n"
-
-            f"🕒 <b>Сохранено:</b>\n"
-            f"<code>{escape_text(created_at)}</code>"
+            f"<blockquote>{escape_text(message_text)}</blockquote>\n\n"
+            f"🕒 <b>Сохранено:</b>\n<code>{escape_text(created_at)}</code>"
         )
-
         try:
-
-            await bot.send_message(
-                log_chat_id,
-                log_text,
-                parse_mode="HTML"
-            )
-
-            logger.info(
-                "DELETE LOG: connection=%s message=%s",
-                connection_id,
-                message_id
-            )
-
+            await bot.send_message(log_chat_id, log_text, parse_mode="HTML")
+            logger.info("DELETE LOG: connection=%s message=%s", connection_id, message_id)
         except Exception as e:
-
-            logger.error(
-                "Ошибка delete log: %s",
-                e
-            )
+            logger.error("Ошибка delete log: %s", e)
 
 
 # ============================================================
 # НОВЫЙ ОБРАБОТЧИК: АВТОМАТИЧЕСКАЯ ОТПРАВКА VIEW‑ONCE ФОТО
-# (добавлен без изменения существующего кода)
+# (с универсальной проверкой)
 # ============================================================
 
 @dp.business_message()
 async def view_once_auto_handler(message: Message):
     """
-    Автоматически отправляет владельцу бизнес‑аккаунта
-    view‑once (самоуничтожающееся) фото в обычном виде
-    сразу при его получении (без необходимости ответа).
+    Автоматически отправляет владельцу view‑once фото как обычное.
+    Проверяет как self_destruct_timer, так и has_protected_content.
     """
-    # 1. Проверяем, что это фото и оно помечено как самоуничтожающееся
+    # 1. Только фото, только если есть признак одноразовости
     if not message.photo:
         return
-    if message.self_destruct_timer is None:   # точный признак view‑once
+
+    # Проверяем оба возможных поля
+    is_view_once = (
+        message.self_destruct_timer is not None
+        or message.has_protected_content
+    )
+    if not is_view_once:
         return
 
     connection_id = message.business_connection_id
     if not connection_id:
         return
 
-    # 2. Не обрабатываем ответы – для них есть отдельный хендлер,
-    #    чтобы не дублировать отправку.
+    # 2. Игнорируем ответы (чтобы не дублировать с reply‑обработчиком)
     if message.reply_to_message:
         return
 
-    # 3. Получаем владельца и не отправляем ему его же фото
+    # 3. Владелец не должен получать свои же фото
     owner_id = await get_owner_id(connection_id)
     if owner_id is None:
         return
     if message.from_user and message.from_user.id == owner_id:
         return
 
-    # 4. Получаем чат владельца
     log_chat_id = await get_log_chat_id(connection_id)
     if not log_chat_id:
         return
 
-    # 5. Сохраняем фото в БД (это делает и основной хендлер, но мы
-    #    вызываем явно для гарантии, т.к. наш хендлер срабатывает
-    #    параллельно и может выполниться раньше основного)
+    # 4. Сохраняем (на всякий случай, если основной хендлер ещё не сработал)
     save_message(connection_id, message)
 
-    # 6. Отправляем владельцу обычное фото (без self_destruct)
+    # 5. Отправляем обычное фото
     try:
         await bot.send_photo(
             chat_id=log_chat_id,
@@ -1456,49 +684,46 @@ async def view_once_auto_handler(message: Message):
             parse_mode="HTML"
         )
         logger.info(
-            "Auto‑sent view‑once photo from %s to owner %s (msg %s)",
-            message.from_user.id, log_chat_id, message.message_id
+            "✅ AUTO: view‑once photo sent to owner %s (msg %s)",
+            log_chat_id, message.message_id
         )
     except Exception as e:
         logger.error("Ошибка автоматической отправки view‑once: %s", e)
 
 
 # ============================================================
-# НОВЫЙ ОБРАБОТЧИК: ОТПРАВКА VIEW‑ONCE ПО ОТВЕТУ (дополнительно)
-# (добавлен без изменения существующего кода)
+# НОВЫЙ ОБРАБОТЧИК: ОТПРАВКА VIEW‑ONCE ПО ОТВЕТУ
 # ============================================================
 
 @dp.business_message()
 async def view_once_reply_handler(message: Message):
     """
-    Обрабатывает ответы владельца на view‑once фото.
-    При ответе на такое фото бот отправляет владельцу это фото в обычном виде.
+    Отправляет владельцу view‑once фото, если он отвечает на него.
     """
-    # 1. Проверяем, что это ответ на другое сообщение
     if not message.reply_to_message:
         return
 
     replied = message.reply_to_message
-
-    # 2. Проверяем, что исходное сообщение — фото с таймером самоуничтожения
     if not replied.photo:
         return
-    if replied.self_destruct_timer is None:
+
+    is_view_once = (
+        replied.self_destruct_timer is not None
+        or replied.has_protected_content
+    )
+    if not is_view_once:
         return
 
     connection_id = message.business_connection_id
     if not connection_id:
         return
 
-    # 3. Определяем владельца и проверяем, что ответил именно он
     owner_id = await get_owner_id(connection_id)
     if owner_id is None:
         return
     if message.from_user.id != owner_id:
-        # Игнорируем ответы от собеседника
         return
 
-    # 4. Получаем сохранённое фото из БД (по ID исходного сообщения)
     saved = get_saved_message(
         connection_id,
         replied.chat.id,
@@ -1516,7 +741,6 @@ async def view_once_reply_handler(message: Message):
         logger.warning("No photo_file_id for view‑once msg %s", replied.message_id)
         return
 
-    # 5. Отправляем владельцу обычное фото (без self_destruct)
     log_chat_id = await get_log_chat_id(connection_id)
     if not log_chat_id:
         return
@@ -1533,7 +757,7 @@ async def view_once_reply_handler(message: Message):
             parse_mode="HTML"
         )
         logger.info(
-            "Reply‑sent view‑once photo to owner %s (orig msg %s)",
+            "✅ REPLY: view‑once photo sent to owner %s (orig msg %s)",
             log_chat_id, replied.message_id
         )
     except Exception as e:
@@ -1545,43 +769,19 @@ async def view_once_reply_handler(message: Message):
 # ============================================================
 
 async def main():
-
-    logger.info(
-        "=========================================="
-    )
-
-    logger.info(
-        "Telegram Business Message Monitor"
-    )
-
-    logger.info(
-        "Multi-account version"
-    )
-
-    logger.info(
-        "=========================================="
-    )
-
-    logger.info(
-        "Запуск бота..."
-    )
-
-    # --------------------------------------------------------
-    # Запускаем polling
-    # --------------------------------------------------------
+    logger.info("==========================================")
+    logger.info("Telegram Business Message Monitor")
+    logger.info("Multi-account version")
+    logger.info("==========================================")
+    logger.info("Запуск бота...")
 
     await dp.start_polling(
         bot,
-
         allowed_updates=[
             "message",
-
             "business_connection",
-
             "business_message",
-
             "edited_business_message",
-
             "deleted_business_messages"
         ]
     )
@@ -1592,26 +792,11 @@ async def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     try:
-
-        asyncio.run(
-            main()
-        )
-
+        asyncio.run(main())
     except KeyboardInterrupt:
-
-        logger.info(
-            "Бот остановлен."
-        )
-
+        logger.info("Бот остановлен.")
     except Exception as e:
-
-        logger.exception(
-            "Критическая ошибка: %s",
-            e
-        )
-
+        logger.exception("Критическая ошибка: %s", e)
     finally:
-
         db.close()

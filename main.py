@@ -14,7 +14,7 @@ from aiogram.types import Message
 # ============================================================
 
 # ВСТАВЬ СЮДА ТОКЕН БОТА ИЗ BOTFATHER
-BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
+BOT_TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_БОТА"
 
 DATABASE_FILE = "business_monitor.db"
 
@@ -578,7 +578,7 @@ def format_sender(
 
 
 # ============================================================
-# /START
+# /START  (обновлён – добавлена строка про одноразовые фото)
 # ============================================================
 
 @dp.message(
@@ -607,7 +607,9 @@ async def start_handler(
         "🗑 Удалённые фотографии\n"
         "🗑 Удалённые сообщения\n"
         "✏️ Редактирование\n"
-        "🔗 Ответы на сохранённые фото",
+        "🔗 Ответы на сохранённые фото\n"
+        "🔓 <b>Одноразовые (view‑once) фото</b> – "
+        "автоматически присылаются как обычные",
 
         parse_mode="HTML"
     )
@@ -707,7 +709,7 @@ async def business_connection_handler(
 
 
 # ============================================================
-# NEW BUSINESS MESSAGE
+# NEW BUSINESS MESSAGE  (ИЗМЕНЕН – добавлена обработка view‑once)
 # ============================================================
 
 @dp.business_message()
@@ -788,7 +790,7 @@ async def business_message_handler(
         return
 
     # ========================================================
-    # НОВОЕ ФОТО
+    # НОВОЕ ФОТО  (с проверкой на одноразовость)
     # ========================================================
 
     if message.photo:
@@ -824,17 +826,20 @@ async def business_message_handler(
             or "Без подписи"
         )
 
+        # Проверяем, является ли фото одноразовым (view‑once)
+        is_view_once = (
+            hasattr(message, 'has_protected_content') and message.has_protected_content
+        ) or (
+            hasattr(message, 'self_destruct_timer') and message.self_destruct_timer is not None
+        )
+
+        # Определяем заголовок
         if message.has_media_spoiler:
-
-            title = (
-                "🫥 <b>НОВОЕ ФОТО СО SPOILER</b>"
-            )
-
+            title = "🫥 <b>НОВОЕ ФОТО СО SPOILER</b>"
+        elif is_view_once:
+            title = "🔓 <b>НОВОЕ ОДНОРАЗОВОЕ ФОТО (обход)</b>"
         else:
-
-            title = (
-                "📷 <b>НОВОЕ ФОТО</b>"
-            )
+            title = "📷 <b>НОВОЕ ФОТО</b>"
 
         log_caption = (
 
@@ -865,16 +870,17 @@ async def business_message_handler(
 
                 parse_mode="HTML",
 
-                has_spoiler=False
+                has_spoiler=False  # всегда показываем как обычное
             )
 
             logger.info(
 
                 "PHOTO SENT | "
-                "connection=%s message=%s",
+                "connection=%s message=%s view_once=%s",
 
                 connection_id,
-                message.message_id
+                message.message_id,
+                is_view_once
             )
 
         except Exception as e:

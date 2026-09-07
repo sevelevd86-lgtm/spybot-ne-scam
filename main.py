@@ -18,7 +18,7 @@ from aiogram.types import Message
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = ("8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c")
 
 if not BOT_TOKEN:
     raise RuntimeError(

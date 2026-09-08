@@ -504,7 +504,7 @@ def connect_keyboard():
     builder.row(
         InlineKeyboardButton(
             text="⚙️ Открыть настройки",
-            url="tg://settings",
+            url="tg://settings/edit",
         )
     )
 

@@ -28,10 +28,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # НАСТРОЙКИ
 # ============================================================
 
-BOT_TOKEN = ""
+BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
 
 ADMIN_IDS = {
-    123456789,
+    5018476227,
 }
 
 DB_NAME = "business_monitor.db"

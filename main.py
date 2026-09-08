@@ -30,11 +30,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # CONFIG
 # ============================================================
 
-BOT_TOKEN = ""
+BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
 
 # Telegram ID пользователей, которым разрешена админ-панель
 ADMIN_IDS = {
-    123456789,
+    5018476227,
     # 987654321,
 }
 

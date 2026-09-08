@@ -22,10 +22,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # =========================================================
 # CONFIG
 # =========================================================
-BOT_TOKEN = ""
+BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
 DB_NAME = "business_monitor.db"
 ADMIN_IDS = {
-    # 123456789,
+    5018476227,
 }
 BOT_USERNAME = "SpyNeScamBot"
 SETTINGS_URL = "tg://settings/edit"

@@ -1,33 +1,38 @@
 import asyncio
 import html
 import logging
+import os
 import sqlite3
-from datetime import datetime, timezone, timedelta
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    Message,
-    InlineKeyboardMarkup,
+    BotCommand,
+    CallbackQuery,
     InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    LabeledPrice,
+    InlineKeyboardMarkup,
+    Message,
     PreCheckoutQuery,
 )
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 
 # ============================================================
-# CONFIG
+# НАСТРОЙКИ
 # ============================================================
 
-# ВСТАВЬ СЮДА ТОКЕН БОТА ИЗ BOTFATHER
-BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
+BOT_TOKEN = ""
 
-DATABASE_FILE = "business_monitor.db"
+DB_PATH = "business_monitor.db"
+
+BOT_USERNAME = "SpyNeScamBot"
 
 
 # ============================================================
@@ -38,33 +43,47 @@ PLANS = {
     "day": {
         "name": "1 день",
         "days": 1,
-        "price": 5,
+        "stars": 5,
     },
-
     "week": {
         "name": "1 неделя",
         "days": 7,
-        "price": 25,
+        "stars": 25,
     },
-
     "month": {
         "name": "1 месяц",
         "days": 30,
-        "price": 67,
+        "stars": 67,
     },
-
-    "half_year": {
+    "6months": {
         "name": "6 месяцев",
         "days": 180,
-        "price": 360,
+        "stars": 360,
     },
-
     "year": {
         "name": "1 год",
         "days": 365,
-        "price": 550,
+        "stars": 550,
     },
 }
+
+
+# ============================================================
+# ПРОМОКОДЫ
+# ============================================================
+
+# N1:
+# 25 успешных активаций
+# 7 дней Premium
+PROMO_N1 = "N1"
+PROMO_N1_LIMIT = 25
+PROMO_N1_DAYS = 7
+
+# Старые промокоды
+PROMO_FOREVER = "DAVE100"
+PROMO_DISCOUNT = "MET200$"
+
+DISCOUNT_PERCENT = 10
 
 
 # ============================================================
@@ -73,21 +92,29 @@ PLANS = {
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# TELEGRAM
+# BOT
 # ============================================================
 
-bot = Bot(token=BOT_TOKEN)
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "Укажи токен бота в переменной BOT_TOKEN в начале файла."
+    )
 
-dp = Dispatcher(
-    storage=MemoryStorage()
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(
+        parse_mode=ParseMode.HTML
+    ),
 )
+
+dp = Dispatcher()
 
 
 # ============================================================
@@ -103,1403 +130,990 @@ class PromoStates(StatesGroup):
 # ============================================================
 
 db = sqlite3.connect(
-    DATABASE_FILE,
-    check_same_thread=False
+    DB_PATH,
+    check_same_thread=False,
 )
 
-db.execute("""
-CREATE TABLE IF NOT EXISTS business_connections (
-    connection_id TEXT PRIMARY KEY,
+db.row_factory = sqlite3.Row
 
-    user_id INTEGER NOT NULL,
+db_lock = asyncio.Lock()
 
-    user_chat_id INTEGER NOT NULL,
 
-    first_name TEXT,
+def init_db():
+    cursor = db.cursor()
 
-    last_name TEXT,
+    # --------------------------------------------------------
+    # BUSINESS CONNECTIONS
+    # --------------------------------------------------------
 
-    username TEXT,
-
-    is_enabled INTEGER DEFAULT 1,
-
-    created_at TEXT,
-
-    updated_at TEXT
-)
-""")
-
-db.execute("""
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-    connection_id TEXT NOT NULL,
-
-    chat_id INTEGER NOT NULL,
-
-    message_id INTEGER NOT NULL,
-
-    sender_id INTEGER,
-
-    sender_name TEXT,
-
-    sender_username TEXT,
-
-    text TEXT,
-
-    message_type TEXT,
-
-    photo_file_id TEXT,
-
-    photo_has_spoiler INTEGER DEFAULT 0,
-
-    caption TEXT,
-
-    created_at TEXT,
-
-    updated_at TEXT,
-
-    UNIQUE (
-        connection_id,
-        chat_id,
-        message_id
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS business_connections (
+            business_connection_id TEXT PRIMARY KEY,
+            user_chat_id INTEGER NOT NULL,
+            can_reply INTEGER DEFAULT 0,
+            is_enabled INTEGER DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
     )
-)
-""")
 
-db.execute("""
-CREATE INDEX IF NOT EXISTS idx_messages_lookup
-ON messages (
-    connection_id,
-    chat_id,
-    message_id
-)
-""")
+    # --------------------------------------------------------
+    # MESSAGES
+    # --------------------------------------------------------
 
-db.execute("""
-CREATE INDEX IF NOT EXISTS idx_connections_user
-ON business_connections (
-    user_id
-)
-""")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            business_connection_id TEXT NOT NULL,
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
 
-# ============================================================
-# USERS / PREMIUM
-# ============================================================
+            user_id INTEGER,
+            username TEXT,
+            first_name TEXT,
 
-db.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
+            text TEXT,
+            caption TEXT,
 
-    username TEXT,
+            photo_file_id TEXT,
+            photo_width INTEGER,
+            photo_height INTEGER,
 
-    first_name TEXT,
+            created_at INTEGER NOT NULL,
 
-    premium_until TEXT,
+            PRIMARY KEY (
+                business_connection_id,
+                chat_id,
+                message_id
+            )
+        )
+        """
+    )
 
-    premium_forever INTEGER DEFAULT 0,
+    # --------------------------------------------------------
+    # USERS
+    # --------------------------------------------------------
 
-    promo_code TEXT,
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
 
-    purchases_count INTEGER DEFAULT 0,
+            username TEXT,
+            first_name TEXT,
 
-    stars_spent INTEGER DEFAULT 0,
+            premium_until INTEGER,
+            premium_forever INTEGER DEFAULT 0,
 
-    created_at TEXT,
+            promo_code TEXT,
 
-    updated_at TEXT
-)
-""")
+            purchases_count INTEGER DEFAULT 0,
+            stars_spent INTEGER DEFAULT 0,
 
-# ============================================================
-# PAYMENTS
-# ============================================================
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
 
-db.execute("""
-CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    # --------------------------------------------------------
+    # PAYMENTS
+    # --------------------------------------------------------
 
-    user_id INTEGER NOT NULL,
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    payload TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
 
-    plan TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            plan TEXT NOT NULL,
+            stars INTEGER NOT NULL,
 
-    stars INTEGER NOT NULL,
+            telegram_payment_charge_id TEXT,
 
-    telegram_payment_charge_id TEXT,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
 
-    created_at TEXT
-)
-""")
+    # --------------------------------------------------------
+    # PROMO USES
+    # --------------------------------------------------------
 
-db.execute("""
-CREATE INDEX IF NOT EXISTS idx_payments_user
-ON payments (
-    user_id
-)
-""")
+    # Каждый user_id может использовать только один промокод.
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS promo_uses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-db.commit()
+            user_id INTEGER NOT NULL UNIQUE,
+            promo_code TEXT NOT NULL,
+
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+
+    # Индексы
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_messages_chat
+        ON messages(chat_id)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_messages_business
+        ON messages(business_connection_id)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_payments_user
+        ON payments(user_id)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_promo_code
+        ON promo_uses(promo_code)
+        """
+    )
+
+    db.commit()
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def now_iso():
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+def now_ts() -> int:
+    return int(time.time())
 
 
-def escape_text(text):
-    return html.escape(
-        str(text or "")
-    )
+def format_datetime(timestamp: Optional[int]) -> str:
+    if not timestamp:
+        return "—"
 
-
-def get_message_text(message: Message):
-
-    if message.text:
-        return message.text
-
-    if message.caption:
-        return message.caption
-
-    return ""
-
-
-def get_sender_info(message: Message):
-
-    if not message.from_user:
-
-        return (
-            None,
-            "Неизвестный пользователь",
-            None
-        )
-
-    user = message.from_user
-
-    return (
-        user.id,
-        user.full_name or "Без имени",
-        user.username
-    )
-
-
-def get_message_type(message: Message):
-
-    if message.photo:
-        return "photo"
-
-    if message.video:
-        return "video"
-
-    if message.animation:
-        return "animation"
-
-    if message.document:
-        return "document"
-
-    if message.audio:
-        return "audio"
-
-    if message.voice:
-        return "voice"
-
-    if message.video_note:
-        return "video_note"
-
-    if message.sticker:
-        return "sticker"
-
-    if message.location:
-        return "location"
-
-    if message.contact:
-        return "contact"
-
-    if message.poll:
-        return "poll"
-
-    if message.text:
-        return "text"
-
-    return "other"
-
-
-def is_private_message(message: Message):
-
-    return (
-        message.chat is not None
-        and message.chat.type == "private"
-    )
-
-
-# ============================================================
-# USER DATABASE
-# ============================================================
-
-def ensure_user(user):
-
-    if not user:
-        return
-
-    timestamp = now_iso()
-
-    db.execute("""
-        INSERT INTO users (
-            user_id,
-            username,
-            first_name,
-            created_at,
-            updated_at
-        )
-
-        VALUES (?, ?, ?, ?, ?)
-
-        ON CONFLICT(user_id)
-
-        DO UPDATE SET
-
-            username = excluded.username,
-            first_name = excluded.first_name,
-            updated_at = excluded.updated_at
-    """, (
-        user.id,
-        user.username,
-        user.first_name,
+    dt = datetime.fromtimestamp(
         timestamp,
-        timestamp
-    ))
+        tz=timezone.utc,
+    )
 
-    db.commit()
+    return dt.strftime("%d.%m.%Y %H:%M")
 
 
-def get_user(user_id):
+def format_remaining(timestamp: Optional[int]) -> str:
+    if not timestamp:
+        return "—"
 
-    cursor = db.execute("""
-        SELECT
-            user_id,
-            username,
-            first_name,
-            premium_until,
-            premium_forever,
-            promo_code,
-            purchases_count,
-            stars_spent,
-            created_at,
-            updated_at
+    remaining = timestamp - now_ts()
 
+    if remaining <= 0:
+        return "истёк"
+
+    days = remaining // 86400
+    remaining %= 86400
+
+    hours = remaining // 3600
+    remaining %= 3600
+
+    minutes = remaining // 60
+
+    parts = []
+
+    if days:
+        parts.append(f"{days} д.")
+
+    if hours:
+        parts.append(f"{hours} ч.")
+
+    if minutes and len(parts) < 2:
+        parts.append(f"{minutes} мин.")
+
+    if not parts:
+        return "меньше минуты"
+
+    return " ".join(parts)
+
+
+def escape_text(value: Optional[str]) -> str:
+    if not value:
+        return ""
+
+    return html.escape(str(value))
+
+
+# ============================================================
+# USERS
+# ============================================================
+
+async def ensure_user(
+    user_id: int,
+    username: Optional[str],
+    first_name: Optional[str],
+):
+    async with db_lock:
+        cursor = db.cursor()
+
+        current_time = now_ts()
+
+        cursor.execute(
+            """
+            INSERT INTO users (
+                user_id,
+                username,
+                first_name,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                username,
+                first_name,
+                current_time,
+                current_time,
+            ),
+        )
+
+        db.commit()
+
+
+def get_user(user_id: int):
+    cursor = db.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
         FROM users
-
         WHERE user_id = ?
-
-        LIMIT 1
-    """, (
-        user_id,
-    ))
+        """,
+        (user_id,),
+    )
 
     return cursor.fetchone()
 
 
-def get_premium_status(user_id):
-
+def is_premium(user_id: int) -> bool:
     user = get_user(user_id)
 
     if not user:
-        return False, None, False
+        return False
 
-    premium_until = user[3]
-    premium_forever = bool(user[4])
+    if user["premium_forever"]:
+        return True
 
-    if premium_forever:
-        return True, None, True
+    premium_until = user["premium_until"]
 
     if not premium_until:
-        return False, None, False
+        return False
 
-    try:
+    return premium_until > now_ts()
 
-        expires = datetime.fromisoformat(
-            premium_until
+
+async def activate_forever(user_id: int):
+    async with db_lock:
+        cursor = db.cursor()
+
+        cursor.execute(
+            """
+            UPDATE users
+            SET
+                premium_forever = 1,
+                premium_until = NULL,
+                updated_at = ?
+            WHERE user_id = ?
+            """,
+            (
+                now_ts(),
+                user_id,
+            ),
         )
 
-        if expires > datetime.now(timezone.utc):
-
-            return True, expires, False
-
-    except Exception:
-
-        logger.exception(
-            "Ошибка проверки Premium user=%s",
-            user_id
-        )
-
-    return False, None, False
+        db.commit()
 
 
-def has_premium(user_id):
-
-    active, _, _ = get_premium_status(
-        user_id
-    )
-
-    return active
-
-
-def get_active_promo(user_id):
-
-    user = get_user(user_id)
-
-    if not user:
-        return None
-
-    return user[5]
-
-
-def set_promo_code(
-    user_id,
-    promo_code
+async def activate_days(
+    user_id: int,
+    days: int,
 ):
+    async with db_lock:
+        cursor = db.cursor()
 
-    ensure_user_by_id(user_id)
+        cursor.execute(
+            """
+            SELECT premium_until, premium_forever
+            FROM users
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
 
-    db.execute("""
-        UPDATE users
+        user = cursor.fetchone()
 
-        SET promo_code = ?,
-            updated_at = ?
+        if not user:
+            return
 
+        if user["premium_forever"]:
+            return
+
+        current_time = now_ts()
+
+        old_until = user["premium_until"] or 0
+
+        base = max(
+            current_time,
+            old_until,
+        )
+
+        new_until = base + days * 86400
+
+        cursor.execute(
+            """
+            UPDATE users
+            SET
+                premium_until = ?,
+                updated_at = ?
+            WHERE user_id = ?
+            """,
+            (
+                new_until,
+                current_time,
+                user_id,
+            ),
+        )
+
+        db.commit()
+
+
+# ============================================================
+# PROMO
+# ============================================================
+
+def promo_already_used(user_id: int) -> bool:
+    cursor = db.cursor()
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM promo_uses
         WHERE user_id = ?
-    """, (
-        promo_code,
-        now_iso(),
-        user_id
-    ))
+        """,
+        (user_id,),
+    )
 
-    db.commit()
+    return cursor.fetchone() is not None
 
 
-def ensure_user_by_id(user_id):
+def get_promo_activations(code: str) -> int:
+    cursor = db.cursor()
 
-    existing = get_user(user_id)
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM promo_uses
+        WHERE promo_code = ?
+        """,
+        (code,),
+    )
 
-    if existing:
-        return
+    row = cursor.fetchone()
 
-    timestamp = now_iso()
-
-    db.execute("""
-        INSERT INTO users (
-            user_id,
-            created_at,
-            updated_at
-        )
-
-        VALUES (?, ?, ?)
-    """, (
-        user_id,
-        timestamp,
-        timestamp
-    ))
-
-    db.commit()
+    return int(row["count"])
 
 
-# ============================================================
-# PREMIUM PRICE
-# ============================================================
-
-def get_plan_price(
-    user_id,
-    plan_key
+async def use_promo(
+    user_id: int,
+    code: str,
 ):
+    """
+    Возвращает:
+      success, message
+    """
 
-    plan = PLANS[plan_key]
+    code = code.strip().upper()
 
-    price = plan["price"]
+    async with db_lock:
+        cursor = db.cursor()
 
-    promo = get_active_promo(
-        user_id
-    )
-
-    if promo == "met200$":
-
-        price = int(
-            price * 0.90
-        )
-
-    return price
-
-
-def get_prices_text(user_id):
-
-    promo = get_active_promo(
-        user_id
-    )
-
-    prices = []
-
-    for key, plan in PLANS.items():
-
-        price = get_plan_price(
-            user_id,
-            key
-        )
-
-        prices.append(
-            f"• {plan['name']} — ⭐ <b>{price}</b>"
-        )
-
-    text = "\n".join(prices)
-
-    if promo == "met200$":
-
-        text = (
-            "🏷 <b>Промокод met200$ активирован</b>\n"
-            "Скидка: <b>10%</b>\n\n"
-            + text
-        )
-
-    return text
-
-
-# ============================================================
-# PREMIUM EXPIRATION
-# ============================================================
-
-def activate_premium(
-    user_id,
-    plan_key,
-    stars
-):
-
-    ensure_user_by_id(
-        user_id
-    )
-
-    plan = PLANS[plan_key]
-
-    user = get_user(
-        user_id
-    )
-
-    if not user:
-        return
-
-    # Если пользователь уже имеет вечный Premium,
-    # ничего продлевать не нужно.
-    if bool(user[4]):
-
-        return
-
-    current_until = None
-
-    if user[3]:
+        # Начинаем транзакцию с блокировкой.
+        # Это важно, чтобы два человека одновременно
+        # не смогли занять одну и ту же последнюю активацию.
+        cursor.execute("BEGIN IMMEDIATE")
 
         try:
+            # ------------------------------------------------
+            # Проверяем, использовал ли пользователь промокод
+            # ------------------------------------------------
 
-            current_until = datetime.fromisoformat(
-                user[3]
+            cursor.execute(
+                """
+                SELECT id
+                FROM promo_uses
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+
+            if cursor.fetchone():
+                db.rollback()
+
+                return (
+                    False,
+                    "❌ Вы уже использовали промокод."
+                )
+
+            # ------------------------------------------------
+            # N1
+            # ------------------------------------------------
+
+            if code == PROMO_N1:
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM promo_uses
+                    WHERE promo_code = ?
+                    """,
+                    (PROMO_N1,),
+                )
+
+                used = int(
+                    cursor.fetchone()["count"]
+                )
+
+                if used >= PROMO_N1_LIMIT:
+                    db.rollback()
+
+                    return (
+                        False,
+                        "❌ Промокод закончился."
+                    )
+
+                # Записываем использование
+                cursor.execute(
+                    """
+                    INSERT INTO promo_uses (
+                        user_id,
+                        promo_code,
+                        created_at
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        PROMO_N1,
+                        now_ts(),
+                    ),
+                )
+
+                # Активируем 7 дней
+                cursor.execute(
+                    """
+                    SELECT premium_until, premium_forever
+                    FROM users
+                    WHERE user_id = ?
+                    """,
+                    (user_id,),
+                )
+
+                user = cursor.fetchone()
+
+                if user and not user["premium_forever"]:
+
+                    current_time = now_ts()
+
+                    old_until = user["premium_until"] or 0
+
+                    base = max(
+                        current_time,
+                        old_until,
+                    )
+
+                    new_until = (
+                        base +
+                        PROMO_N1_DAYS * 86400
+                    )
+
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET
+                            premium_until = ?,
+                            promo_code = ?,
+                            updated_at = ?
+                        WHERE user_id = ?
+                        """,
+                        (
+                            new_until,
+                            PROMO_N1,
+                            current_time,
+                            user_id,
+                        ),
+                    )
+
+                db.commit()
+
+                activation_number = used + 1
+
+                return (
+                    True,
+                    (
+                        "🎉 <b>Промокод активирован!</b>\n\n"
+                        f"⭐ Premium: <b>7 дней</b>\n"
+                        f"🎟 Активация: <b>"
+                        f"{activation_number}/{PROMO_N1_LIMIT}</b>"
+                    ),
+                )
+
+            # ------------------------------------------------
+            # DAVE100
+            # ------------------------------------------------
+
+            if code == PROMO_FOREVER:
+
+                cursor.execute(
+                    """
+                    INSERT INTO promo_uses (
+                        user_id,
+                        promo_code,
+                        created_at
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        PROMO_FOREVER,
+                        now_ts(),
+                    ),
+                )
+
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET
+                        premium_forever = 1,
+                        premium_until = NULL,
+                        promo_code = ?,
+                        updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (
+                        PROMO_FOREVER,
+                        now_ts(),
+                        user_id,
+                    ),
+                )
+
+                db.commit()
+
+                return (
+                    True,
+                    (
+                        "🎉 <b>Промокод активирован!</b>\n\n"
+                        "⭐ Premium активирован <b>навсегда</b>."
+                    ),
+                )
+
+            # ------------------------------------------------
+            # MET200$
+            # ------------------------------------------------
+
+            if code == PROMO_DISCOUNT:
+
+                cursor.execute(
+                    """
+                    INSERT INTO promo_uses (
+                        user_id,
+                        promo_code,
+                        created_at
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        PROMO_DISCOUNT,
+                        now_ts(),
+                    ),
+                )
+
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET
+                        promo_code = ?,
+                        updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (
+                        PROMO_DISCOUNT,
+                        now_ts(),
+                        user_id,
+                    ),
+                )
+
+                db.commit()
+
+                prices_text = []
+
+                for plan_key, plan in PLANS.items():
+                    discounted = max(
+                        1,
+                        int(
+                            plan["stars"] *
+                            (100 - DISCOUNT_PERCENT) /
+                            100
+                        ),
+                    )
+
+                    prices_text.append(
+                        f"• {plan['name']}: "
+                        f"<s>{plan['stars']}⭐</s> "
+                        f"<b>{discounted}⭐</b>"
+                    )
+
+                return (
+                    True,
+                    (
+                        "🎉 <b>Скидка активирована!</b>\n\n"
+                        f"⭐ Ваша скидка: <b>10%</b>\n\n"
+                        + "\n".join(prices_text)
+                    ),
+                )
+
+            # ------------------------------------------------
+            # НЕИЗВЕСТНЫЙ КОД
+            # ------------------------------------------------
+
+            db.rollback()
+
+            return (
+                False,
+                "❌ Промокод не найден."
             )
 
         except Exception:
-
-            current_until = None
-
-    now = datetime.now(
-        timezone.utc
-    )
-
-    if current_until and current_until > now:
-
-        start = current_until
-
-    else:
-
-        start = now
-
-    new_until = (
-        start
-        + timedelta(
-            days=plan["days"]
-        )
-    )
-
-    timestamp = now_iso()
-
-    db.execute("""
-        UPDATE users
-
-        SET premium_until = ?,
-            premium_forever = 0,
-            purchases_count = purchases_count + 1,
-            stars_spent = stars_spent + ?,
-            updated_at = ?
-
-        WHERE user_id = ?
-    """, (
-        new_until.isoformat(),
-        stars,
-        timestamp,
-        user_id
-    ))
-
-    db.commit()
-
-
-def activate_forever(
-    user_id
-):
-
-    ensure_user_by_id(
-        user_id
-    )
-
-    db.execute("""
-        UPDATE users
-
-        SET premium_forever = 1,
-            premium_until = NULL,
-            updated_at = ?
-
-        WHERE user_id = ?
-    """, (
-        now_iso(),
-        user_id
-    ))
-
-    db.commit()
-
-
-# ============================================================
-# PROFILE FORMAT
-# ============================================================
-
-def format_remaining(
-    expires
-):
-
-    if not expires:
-        return "—"
-
-    now = datetime.now(
-        timezone.utc
-    )
-
-    difference = expires - now
-
-    total_seconds = int(
-        difference.total_seconds()
-    )
-
-    if total_seconds <= 0:
-        return "истёк"
-
-    days = total_seconds // 86400
-
-    hours = (
-        total_seconds % 86400
-    ) // 3600
-
-    minutes = (
-        total_seconds % 3600
-    ) // 60
-
-    if days > 0:
-
-        return (
-            f"{days} д. "
-            f"{hours} ч."
-        )
-
-    if hours > 0:
-
-        return (
-            f"{hours} ч. "
-            f"{minutes} мин."
-        )
-
-    return (
-        f"{minutes} мин."
-    )
-
-
-def profile_text(
-    user_id
-):
-
-    user = get_user(
-        user_id
-    )
-
-    if not user:
-
-        return (
-            "👤 <b>ПРОФИЛЬ</b>\n\n"
-            f"🆔 ID: <code>{user_id}</code>\n\n"
-            "💎 Premium: ❌"
-        )
-
-    username = user[1]
-    first_name = user[2]
-
-    active, expires, forever = (
-        get_premium_status(
-            user_id
-        )
-    )
-
-    purchases = user[6] or 0
-    stars_spent = user[7] or 0
-
-    name = (
-        first_name
-        or username
-        or "Пользователь"
-    )
-
-    text = (
-        "👤 <b>МОЙ ПРОФИЛЬ</b>\n\n"
-
-        f"👋 {escape_text(name)}\n"
-
-        f"🆔 ID: <code>{user_id}</code>\n"
-    )
-
-    if username:
-
-        text += (
-            f"🔗 Username: "
-            f"@{escape_text(username)}\n"
-        )
-
-    text += "\n"
-
-    if active and forever:
-
-        text += (
-            "💎 Premium: <b>АКТИВЕН ♾️</b>\n\n"
-            "⏳ Срок: <b>навсегда</b>\n"
-        )
-
-    elif active and expires:
-
-        text += (
-            "💎 Premium: <b>АКТИВЕН 🟢</b>\n\n"
-
-            f"⏳ Осталось: "
-            f"<b>{format_remaining(expires)}</b>\n\n"
-
-            f"📅 До:\n"
-            f"<code>"
-            f"{expires.strftime('%d.%m.%Y %H:%M UTC')}"
-            f"</code>\n"
-        )
-
-    else:
-
-        text += (
-            "💎 Premium: <b>НЕ АКТИВЕН 🔴</b>\n\n"
-
-            "🔒 Доступ к истории сообщений "
-            "ограничен.\n"
-        )
-
-    text += (
-        "\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-
-        f"🛒 Покупок: <b>{purchases}</b>\n"
-        f"⭐ Потрачено: <b>{stars_spent}</b>\n"
-    )
-
-    promo = user[5]
-
-    if promo:
-
-        text += (
-            f"\n🎟 Промокод: "
-            f"<code>{escape_text(promo)}</code>\n"
-        )
-
-    return text
+            db.rollback()
+            raise
 
 
 # ============================================================
 # KEYBOARDS
 # ============================================================
 
-def get_main_keyboard():
+def main_keyboard():
+    builder = ReplyKeyboardBuilder()
 
-    return ReplyKeyboardMarkup(
-        keyboard=[
+    builder.button(
+        text="⭐ Premium"
+    )
 
-            [
-                KeyboardButton(
-                    text="⭐ Premium"
-                ),
-                KeyboardButton(
-                    text="👤 Профиль"
-                )
-            ],
+    builder.button(
+        text="👤 Профиль"
+    )
 
-            [
-                KeyboardButton(
-                    text="🎟 Промокод"
-                )
-            ]
+    builder.button(
+        text="🎟 Промокод"
+    )
 
-        ],
-        resize_keyboard=True,
-        is_persistent=True
+    builder.adjust(2, 1)
+
+    return builder.as_markup(
+        resize_keyboard=True
     )
 
 
-def get_start_keyboard():
+def connect_keyboard():
+    builder = InlineKeyboardBuilder()
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-
-            [
-                InlineKeyboardButton(
-                    text="⚙️ Открыть настройки Telegram",
-                    url="tg://settings"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="⭐ Premium",
-                    callback_data="premium"
-                ),
-
-                InlineKeyboardButton(
-                    text="👤 Профиль",
-                    callback_data="profile"
-                )
-            ]
-
-        ]
+    builder.row(
+        InlineKeyboardButton(
+            text="🟢 Подключить",
+            url="tg://settings/business",
+        )
     )
 
-
-def get_premium_keyboard():
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-
-            [
-                InlineKeyboardButton(
-                    text="⭐ 1 день",
-                    callback_data="buy:day"
-                ),
-
-                InlineKeyboardButton(
-                    text="⭐ Неделя",
-                    callback_data="buy:week"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="⭐ Месяц",
-                    callback_data="buy:month"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="⭐ 6 месяцев",
-                    callback_data="buy:half_year"
-                ),
-
-                InlineKeyboardButton(
-                    text="⭐ Год",
-                    callback_data="buy:year"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🎟 Ввести промокод",
-                    callback_data="promo"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="👤 Мой профиль",
-                    callback_data="profile"
-                )
-            ]
-
-        ]
+    builder.row(
+        InlineKeyboardButton(
+            text="🤖 Открыть @SpyNeScamBot",
+            url="https://t.me/SpyNeScamBot",
+        )
     )
 
+    return builder.as_markup()
 
-def get_buy_keyboard():
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def premium_keyboard(user_id: int):
+    builder = InlineKeyboardBuilder()
 
-            [
-                InlineKeyboardButton(
-                    text="⭐ КУПИТЬ PREMIUM",
-                    callback_data="premium"
-                )
-            ]
+    user = get_user(user_id)
 
-        ]
+    discount = (
+        user
+        and user["promo_code"] == PROMO_DISCOUNT
+    )
+
+    for plan_key, plan in PLANS.items():
+
+        price = plan["stars"]
+
+        if discount:
+            price = max(
+                1,
+                int(
+                    price *
+                    (100 - DISCOUNT_PERCENT) /
+                    100
+                ),
+            )
+
+        builder.row(
+            InlineKeyboardButton(
+                text=(
+                    f"{plan['name']} — "
+                    f"{price}⭐"
+                ),
+                callback_data=f"buy:{plan_key}",
+            )
+        )
+
+    return builder.as_markup()
+
+
+def buy_premium_keyboard():
+    builder = InlineKeyboardBuilder()
+
+    builder.row(
+        InlineKeyboardButton(
+            text="⭐ Купить Premium",
+            callback_data="premium",
+        )
+    )
+
+    return builder.as_markup()
+
+
+# ============================================================
+# START / CONNECTION
+# ============================================================
+
+START_TEXT = """
+<b>🐻‍❄️ SpyNeScamBot</b>
+
+Бот поможет получать уведомления о действиях в подключённых чатах.
+
+<b>Подключение бота — 3 простых шага</b>
+
+<b>1.</b> Откройте управление профилем Telegram.
+
+<b>2.</b> Найдите раздел <b>«Автоматизация чатов»</b>.
+
+<b>3.</b> Введите в поле:
+
+<code>@SpyNeScamBot</code>
+
+и нажмите <b>«Добавить»</b>.
+
+После подключения бот начнёт работать с выбранными вами чатами.
+
+Нажмите кнопку ниже, чтобы открыть настройки подключения.
+"""
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    await ensure_user(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+    )
+
+    await message.answer(
+        START_TEXT,
+        reply_markup=connect_keyboard(),
     )
 
 
 # ============================================================
-# PREMIUM SCREEN
+# PREMIUM
 # ============================================================
 
-async def send_premium_menu(
-    chat_id,
-    user_id,
-    message=None
+async def show_premium(
+    message: Message,
 ):
+    user_id = message.from_user.id
 
-    ensure_user_by_id(
-        user_id
+    await ensure_user(
+        user_id,
+        message.from_user.username,
+        message.from_user.first_name,
     )
 
-    active, expires, forever = (
-        get_premium_status(
-            user_id
-        )
+    user = get_user(user_id)
+
+    discount = (
+        user
+        and user["promo_code"] == PROMO_DISCOUNT
     )
 
-    if active and forever:
+    text = """
+<b>⭐ Premium</b>
 
-        status = (
-            "💎 <b>Premium активен навсегда</b>\n\n"
+Premium позволяет получать уведомления об удалённых сообщениях и восстанавливать сохранённые данные сообщений.
+
+<b>Выберите подписку:</b>
+"""
+
+    if discount:
+        text += (
+            "\n🎟 <b>У вас активна скидка 10%</b>\n"
         )
-
-    elif active and expires:
-
-        status = (
-            "💎 <b>Premium активен</b>\n"
-            f"⏳ Осталось: "
-            f"<b>{format_remaining(expires)}</b>\n\n"
-        )
-
-    else:
-
-        status = (
-            "💎 <b>Premium не активен</b>\n\n"
-        )
-
-    text = (
-
-        "⭐ <b>PREMIUM</b>\n\n"
-
-        + status
-
-        + "Выбери срок подписки:\n\n"
-
-        + get_prices_text(
-            user_id
-        )
-
-        + "\n\n"
-        "После выбора откроется оплата "
-        "Telegram Stars ⭐."
-    )
-
-    if message:
-
-        await message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_premium_keyboard()
-        )
-
-    else:
-
-        await bot.send_message(
-            chat_id,
-            text,
-            parse_mode="HTML",
-            reply_markup=get_premium_keyboard()
-        )
-
-
-# ============================================================
-# /START
-# ============================================================
-
-@dp.message(
-    CommandStart()
-)
-async def start_handler(
-    message: Message
-):
-
-    ensure_user(
-        message.from_user
-    )
-
-    text = (
-
-        "🕵️ <b>Business Message Monitor</b>\n\n"
-
-        "✅ <b>Бот запущен.</b>\n\n"
-
-        "Этот бот работает через "
-        "<b>Telegram Business</b>.\n\n"
-
-        "━━━━━━━━━━━━━━━━━━\n"
-
-        "📲 <b>КАК ПОДКЛЮЧИТЬ</b>\n"
-
-        "━━━━━━━━━━━━━━━━━━\n\n"
-
-        "1️⃣ Нажми кнопку "
-        "<b>«Открыть настройки Telegram»</b>.\n\n"
-
-        "2️⃣ Открой "
-        "<b>Telegram Business</b>.\n\n"
-
-        "3️⃣ Найди "
-        "<b>Подключённые боты / Чат-боты</b> "
-        "и выбери этого бота.\n\n"
-
-        "4️⃣ Разреши боту работать "
-        "с нужными личными чатами.\n\n"
-
-        "5️⃣ После подключения бот "
-        "автоматически начнёт получать "
-        "Business-сообщения.\n\n"
-
-        "━━━━━━━━━━━━━━━━━━\n"
-
-        "💎 <b>PREMIUM</b>\n"
-
-        "━━━━━━━━━━━━━━━━━━\n\n"
-
-        "Без Premium при удалении сообщения "
-        "ты получишь уведомление "
-        "с кнопкой покупки.\n\n"
-
-        "С Premium бот сможет отправлять "
-        "сохранённую информацию "
-        "об удалённых сообщениях.\n\n"
-
-        "Используй кнопки снизу 👇"
-    )
 
     await message.answer(
         text,
-        parse_mode="HTML",
-        reply_markup=get_start_keyboard()
-    )
-
-    await message.answer(
-        "👇 <b>МЕНЮ</b>",
-        parse_mode="HTML",
-        reply_markup=get_main_keyboard()
-    )
-
-    logger.info(
-        "/start: %s",
-        message.from_user.id
+        reply_markup=premium_keyboard(user_id),
     )
 
 
-# ============================================================
-# MAIN KEYBOARD — PREMIUM
-# ============================================================
-
-@dp.message(
-    F.text == "⭐ Premium"
-)
+@dp.message(F.text == "⭐ Premium")
 async def premium_button(
-    message: Message
-):
-
-    ensure_user(
-        message.from_user
-    )
-
-    await send_premium_menu(
-        chat_id=message.chat.id,
-        user_id=message.from_user.id
-    )
-
-
-@dp.message(
-    Command("premium")
-)
-async def premium_command(
-    message: Message
-):
-
-    ensure_user(
-        message.from_user
-    )
-
-    await send_premium_menu(
-        chat_id=message.chat.id,
-        user_id=message.from_user.id
-    )
-
-
-# ============================================================
-# PROFILE
-# ============================================================
-
-@dp.message(
-    F.text == "👤 Профиль"
-)
-async def profile_button(
-    message: Message
-):
-
-    ensure_user(
-        message.from_user
-    )
-
-    await message.answer(
-        profile_text(
-            message.from_user.id
-        ),
-        parse_mode="HTML",
-        reply_markup=get_premium_keyboard()
-    )
-
-
-@dp.message(
-    Command("profile")
-)
-async def profile_command(
-    message: Message
-):
-
-    ensure_user(
-        message.from_user
-    )
-
-    await message.answer(
-        profile_text(
-            message.from_user.id
-        ),
-        parse_mode="HTML",
-        reply_markup=get_premium_keyboard()
-    )
-
-
-# ============================================================
-# PROMO BUTTON
-# ============================================================
-
-@dp.message(
-    F.text == "🎟 Промокод"
-)
-async def promo_button(
     message: Message,
-    state: FSMContext
 ):
-
-    ensure_user(
-        message.from_user
-    )
-
-    await state.set_state(
-        PromoStates.waiting_code
-    )
-
-    await message.answer(
-        "🎟 <b>ПРОМОКОД</b>\n\n"
-        "Отправь промокод одним сообщением.\n\n"
-        "Например:\n"
-        "<code>Dave100</code>\n"
-        "<code>met200$</code>",
-        parse_mode="HTML"
-    )
+    await show_premium(message)
 
 
-# ============================================================
-# PROMO CALLBACK
-# ============================================================
-
-@dp.callback_query(
-    F.data == "promo"
-)
-async def promo_callback(
-    callback,
-    state: FSMContext
+@dp.callback_query(F.data == "premium")
+async def premium_callback(
+    callback: CallbackQuery,
 ):
-
-    ensure_user(
-        callback.from_user
-    )
-
-    await state.set_state(
-        PromoStates.waiting_code
-    )
-
     await callback.answer()
+
+    user_id = callback.from_user.id
+
+    await ensure_user(
+        user_id,
+        callback.from_user.username,
+        callback.from_user.first_name,
+    )
 
     await callback.message.answer(
-        "🎟 <b>ПРОМОКОД</b>\n\n"
-        "Отправь промокод одним сообщением.\n\n"
-        "Доступные коды:\n"
-        "<code>Dave100</code>\n"
-        "<code>met200$</code>",
-        parse_mode="HTML"
+        """
+<b>⭐ Premium</b>
+
+Выберите необходимый срок подписки:
+""",
+        reply_markup=premium_keyboard(user_id),
     )
 
 
 # ============================================================
-# PROMO PROCESSOR
+# BUY PREMIUM
 # ============================================================
 
-@dp.message(
-    PromoStates.waiting_code
-)
-async def process_promo(
-    message: Message,
-    state: FSMContext
-):
+def get_plan_price(
+    user_id: int,
+    plan_key: str,
+) -> int:
 
-    ensure_user(
-        message.from_user
-    )
+    plan = PLANS[plan_key]
 
-    code = (
-        message.text
-        or ""
-    ).strip()
+    price = plan["stars"]
 
-    code_lower = code.lower()
+    user = get_user(user_id)
 
-    # --------------------------------------------------------
-    # DAVE100
-    # --------------------------------------------------------
-
-    if code_lower == "dave100":
-
-        activate_forever(
-            message.from_user.id
-        )
-
-        await state.clear()
-
-        await message.answer(
-            "🎉 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n\n"
-
-            "💎 Premium активирован "
-            "<b>НАВСЕГДА ♾️</b>\n\n"
-
-            "Теперь тебе доступны "
-            "все Premium-функции.",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard()
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # MET200$
-    # --------------------------------------------------------
-
-    if code_lower == "met200$":
-
-        set_promo_code(
-            message.from_user.id,
-            "met200$"
-        )
-
-        await state.clear()
-
-        await message.answer(
-            "🏷 <b>ПРОМОКОД АКТИВИРОВАН</b>\n\n"
-
-            "🎁 Скидка: <b>10%</b>\n\n"
-
-            "Новые цены:\n\n"
-
-            + get_prices_text(
-                message.from_user.id
+    if (
+        user
+        and user["promo_code"] == PROMO_DISCOUNT
+    ):
+        price = max(
+            1,
+            int(
+                price *
+                (100 - DISCOUNT_PERCENT) /
+                100
             ),
-
-            parse_mode="HTML",
-            reply_markup=get_premium_keyboard()
         )
 
-        return
-
-    # --------------------------------------------------------
-    # UNKNOWN
-    # --------------------------------------------------------
-
-    await message.answer(
-        "❌ <b>Промокод не найден.</b>\n\n"
-        "Проверь правильность написания.",
-        parse_mode="HTML"
-    )
+    return price
 
 
-# ============================================================
-# PREMIUM CALLBACK
-# ============================================================
-
-@dp.callback_query(
-    F.data == "premium"
-)
-async def premium_callback(
-    callback
+@dp.callback_query(F.data.startswith("buy:"))
+async def buy_plan(
+    callback: CallbackQuery,
 ):
+    user_id = callback.from_user.id
 
-    ensure_user(
-        callback.from_user
-    )
-
-    await callback.answer()
-
-    await send_premium_menu(
-        chat_id=callback.message.chat.id,
-        user_id=callback.from_user.id,
-        message=callback.message
-    )
-
-
-# ============================================================
-# PROFILE CALLBACK
-# ============================================================
-
-@dp.callback_query(
-    F.data == "profile"
-)
-async def profile_callback(
-    callback
-):
-
-    ensure_user(
-        callback.from_user
-    )
-
-    await callback.answer()
-
-    await callback.message.edit_text(
-        profile_text(
-            callback.from_user.id
-        ),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="⭐ Premium",
-                        callback_data="premium"
-                    )
-                ]
-            ]
-        )
-    )
-
-
-# ============================================================
-# CREATE INVOICE
-# ============================================================
-
-@dp.callback_query(
-    F.data.startswith("buy:")
-)
-async def buy_callback(
-    callback
-):
-
-    ensure_user(
-        callback.from_user
-    )
-
-    plan_key = callback.data.split(
-        ":",
-        1
-    )[1]
+    plan_key = callback.data.split(":", 1)[1]
 
     if plan_key not in PLANS:
-
         await callback.answer(
-            "❌ Неизвестный тариф.",
-            show_alert=True
+            "Неизвестный тариф.",
+            show_alert=True,
         )
-
         return
+
+    await ensure_user(
+        user_id,
+        callback.from_user.username,
+        callback.from_user.first_name,
+    )
 
     plan = PLANS[plan_key]
 
     price = get_plan_price(
-        callback.from_user.id,
-        plan_key
-    )
-
-    promo = get_active_promo(
-        callback.from_user.id
+        user_id,
+        plan_key,
     )
 
     payload = (
         f"premium:"
         f"{plan_key}:"
-        f"{callback.from_user.id}"
+        f"{user_id}:"
+        f"{int(time.time())}"
     )
-
-    description = (
-        f"Premium на {plan['name']}."
-    )
-
-    if promo == "met200$":
-
-        description += (
-            "\nПрименена скидка 10%."
-        )
 
     try:
-
-        # Telegram Stars / XTR.
-        # Для цифровых товаров provider_token
-        # не требуется.
         await bot.send_invoice(
-
-            chat_id=callback.from_user.id,
-
+            chat_id=user_id,
             title=f"Premium — {plan['name']}",
-
-            description=description,
-
+            description=(
+                f"Premium подписка на {plan['name']}."
+            ),
             payload=payload,
-
             currency="XTR",
-
             prices=[
-                LabeledPrice(
-                    label=f"Premium {plan['name']}",
-                    amount=price
-                )
-            ]
+                {
+                    "label": f"Premium {plan['name']}",
+                    "amount": price,
+                }
+            ],
         )
 
         await callback.answer()
 
     except Exception as e:
-
         logger.exception(
             "Ошибка создания invoice: %s",
-            e
+            e,
         )
 
         await callback.answer(
-            "❌ Не удалось создать оплату.",
-            show_alert=True
+            "Не удалось создать оплату.",
+            show_alert=True,
         )
 
 
@@ -1508,881 +1122,573 @@ async def buy_callback(
 # ============================================================
 
 @dp.pre_checkout_query()
-async def pre_checkout_handler(
-    query: PreCheckoutQuery
+async def process_pre_checkout(
+    query: PreCheckoutQuery,
 ):
 
     payload = query.invoice_payload
 
-    parts = payload.split(
-        ":"
-    )
-
-    if len(parts) != 3:
-
+    if not payload.startswith("premium:"):
         await query.answer(
             ok=False,
-            error_message="Некорректный платёж."
+            error_message="Неверный платёж.",
         )
-
         return
 
-    prefix = parts[0]
+    parts = payload.split(":")
+
+    if len(parts) < 4:
+        await query.answer(
+            ok=False,
+            error_message="Неверный платёж.",
+        )
+        return
+
     plan_key = parts[1]
 
     try:
-
-        payload_user_id = int(
-            parts[2]
-        )
-
+        payload_user_id = int(parts[2])
     except ValueError:
-
         await query.answer(
             ok=False,
-            error_message="Некорректный пользователь."
+            error_message="Неверный пользователь.",
         )
-
-        return
-
-    if prefix != "premium":
-
-        await query.answer(
-            ok=False,
-            error_message="Некорректный товар."
-        )
-
-        return
-
-    if plan_key not in PLANS:
-
-        await query.answer(
-            ok=False,
-            error_message="Тариф не найден."
-        )
-
         return
 
     if payload_user_id != query.from_user.id:
-
         await query.answer(
             ok=False,
-            error_message="Этот счёт принадлежит другому пользователю."
+            error_message="Этот платёж принадлежит другому пользователю.",
         )
+        return
 
+    if plan_key not in PLANS:
+        await query.answer(
+            ok=False,
+            error_message="Тариф не найден.",
+        )
         return
 
     expected_price = get_plan_price(
         query.from_user.id,
-        plan_key
+        plan_key,
     )
 
     if query.currency != "XTR":
-
         await query.answer(
             ok=False,
-            error_message="Неверная валюта платежа."
+            error_message="Неверная валюта.",
         )
-
         return
 
     if query.total_amount != expected_price:
-
         await query.answer(
             ok=False,
-            error_message="Сумма платежа изменилась. Создай новый счёт."
+            error_message="Цена изменилась. Создайте новый счёт.",
         )
-
         return
 
-    await query.answer(
-        ok=True
-    )
+    await query.answer(ok=True)
 
 
 # ============================================================
 # SUCCESSFUL PAYMENT
 # ============================================================
 
-@dp.message(
-    F.successful_payment
-)
-async def successful_payment_handler(
-    message: Message
+@dp.message(F.successful_payment)
+async def successful_payment(
+    message: Message,
 ):
-
     payment = message.successful_payment
-
-    if not payment:
-        return
-
-    user_id = message.from_user.id
 
     payload = payment.invoice_payload
 
-    parts = payload.split(
-        ":"
-    )
-
-    if len(parts) != 3:
+    if not payload.startswith("premium:"):
         return
 
-    prefix = parts[0]
+    parts = payload.split(":")
+
+    if len(parts) < 4:
+        return
+
     plan_key = parts[1]
 
     try:
-
-        payload_user_id = int(
-            parts[2]
-        )
-
+        payload_user_id = int(parts[2])
     except ValueError:
-
         return
 
-    if prefix != "premium":
-        return
-
-    if payload_user_id != user_id:
+    if payload_user_id != message.from_user.id:
         return
 
     if plan_key not in PLANS:
         return
 
-    expected_price = get_plan_price(
+    plan = PLANS[plan_key]
+
+    user_id = message.from_user.id
+
+    await ensure_user(
         user_id,
-        plan_key
+        message.from_user.username,
+        message.from_user.first_name,
     )
 
-    if payment.currency != "XTR":
+    # Цена, которая была фактически оплачена
+    stars_paid = payment.total_amount
+
+    async with db_lock:
+        cursor = db.cursor()
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM payments
+            WHERE telegram_payment_charge_id = ?
+            """,
+            (
+                payment.telegram_payment_charge_id,
+            ),
+        )
+
+        existing = cursor.fetchone()
+
+        if existing:
+            return
+
+        cursor.execute(
+            """
+            INSERT INTO payments (
+                user_id,
+                payload,
+                plan,
+                stars,
+                telegram_payment_charge_id,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                payload,
+                plan_key,
+                stars_paid,
+                payment.telegram_payment_charge_id,
+                now_ts(),
+            ),
+        )
+
+        cursor.execute(
+            """
+            SELECT premium_until, premium_forever
+            FROM users
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+
+        user = cursor.fetchone()
+
+        if not user:
+            db.commit()
+            return
+
+        if not user["premium_forever"]:
+
+            current_time = now_ts()
+
+            old_until = user["premium_until"] or 0
+
+            base = max(
+                current_time,
+                old_until,
+            )
+
+            new_until = (
+                base +
+                plan["days"] * 86400
+            )
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET
+                    premium_until = ?,
+                    purchases_count = purchases_count + 1,
+                    stars_spent = stars_spent + ?,
+                    updated_at = ?
+                WHERE user_id = ?
+                """,
+                (
+                    new_until,
+                    stars_paid,
+                    current_time,
+                    user_id,
+                ),
+            )
+
+        else:
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET
+                    purchases_count = purchases_count + 1,
+                    stars_spent = stars_spent + ?,
+                    updated_at = ?
+                WHERE user_id = ?
+                """,
+                (
+                    stars_paid,
+                    now_ts(),
+                    user_id,
+                ),
+            )
+
+        db.commit()
+
+    await message.answer(
+        (
+            "✅ <b>Оплата прошла успешно!</b>\n\n"
+            f"⭐ Тариф: <b>{plan['name']}</b>\n"
+            f"💰 Оплачено: <b>{stars_paid} Stars</b>\n\n"
+            "Premium активирован."
+        )
+    )
+
+
+# ============================================================
+# PROFILE
+# ============================================================
+
+async def show_profile(
+    message: Message,
+):
+    user_id = message.from_user.id
+
+    await ensure_user(
+        user_id,
+        message.from_user.username,
+        message.from_user.first_name,
+    )
+
+    user = get_user(user_id)
+
+    if not user:
         return
 
-    # Защита от неправильной суммы.
-    if payment.total_amount != expected_price:
+    if user["premium_forever"]:
+        premium_status = "⭐ Premium навсегда"
+        remaining = "∞"
+        expires = "Никогда"
 
-        await message.answer(
-            "⚠️ <b>Платёж получен, но сумма "
-            "не совпала с тарифом.</b>\n\n"
-            "Обратись к администратору.",
-            parse_mode="HTML"
+    elif user["premium_until"] and user["premium_until"] > now_ts():
+        premium_status = "⭐ Premium активен"
+        remaining = format_remaining(
+            user["premium_until"]
         )
-
-        logger.error(
-            "PRICE MISMATCH user=%s expected=%s received=%s",
-            user_id,
-            expected_price,
-            payment.total_amount
-        )
-
-        return
-
-    activate_premium(
-        user_id,
-        plan_key,
-        payment.total_amount
-    )
-
-    # Сохраняем платёж.
-    db.execute("""
-        INSERT INTO payments (
-            user_id,
-            payload,
-            plan,
-            stars,
-            telegram_payment_charge_id,
-            created_at
-        )
-
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        payload,
-        plan_key,
-        payment.total_amount,
-        payment.telegram_payment_charge_id,
-        now_iso()
-    ))
-
-    db.commit()
-
-    active, expires, forever = (
-        get_premium_status(
-            user_id
-        )
-    )
-
-    if forever:
-
-        expiration_text = (
-            "♾️ <b>Навсегда</b>"
+        expires = format_datetime(
+            user["premium_until"]
         )
 
     else:
+        premium_status = "❌ Premium не активен"
+        remaining = "—"
+        expires = "—"
 
-        expiration_text = (
-            f"📅 До: "
-            f"<code>"
-            f"{expires.strftime('%d.%m.%Y %H:%M UTC')}"
-            f"</code>\n\n"
+    username = (
+        f"@{user['username']}"
+        if user["username"]
+        else "не указан"
+    )
 
-            f"⏳ Осталось: "
-            f"<b>{format_remaining(expires)}</b>"
-        )
+    text = (
+        "<b>👤 Профиль</b>\n\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"👤 Username: {escape_text(username)}\n\n"
+        f"{premium_status}\n"
+        f"⏳ Осталось: <b>{remaining}</b>\n"
+        f"📅 До: <b>{expires}</b>\n\n"
+        f"🛒 Покупок: <b>{user['purchases_count']}</b>\n"
+        f"⭐ Потрачено Stars: <b>{user['stars_spent']}</b>"
+    )
+
+    await message.answer(text)
+
+
+@dp.message(F.text == "👤 Профиль")
+async def profile_button(
+    message: Message,
+):
+    await show_profile(message)
+
+
+@dp.message(Command("profile"))
+async def profile_command(
+    message: Message,
+):
+    await show_profile(message)
+
+
+# ============================================================
+# PROMO BUTTON
+# ============================================================
+
+@dp.message(F.text == "🎟 Промокод")
+async def promo_button(
+    message: Message,
+    state: FSMContext,
+):
+    await state.set_state(
+        PromoStates.waiting_code
+    )
 
     await message.answer(
-        "🎉 <b>ОПЛАТА УСПЕШНА!</b>\n\n"
-
-        f"💎 Premium: <b>{PLANS[plan_key]['name']}</b>\n"
-
-        f"⭐ Оплачено: "
-        f"<b>{payment.total_amount}</b>\n\n"
-
-        + expiration_text
-
-        + "\n\n"
-        "Теперь Premium активен 🟢",
-
-        parse_mode="HTML",
-
-        reply_markup=get_main_keyboard()
+        "<b>🎟 Промокод</b>\n\n"
+        "Введите промокод одним сообщением."
     )
 
-    logger.info(
-        "PAYMENT SUCCESS | user=%s plan=%s stars=%s",
-        user_id,
-        plan_key,
-        payment.total_amount
+
+@dp.message(
+    PromoStates.waiting_code
+)
+async def process_promo(
+    message: Message,
+    state: FSMContext,
+):
+    code = (message.text or "").strip()
+
+    if not code:
+        await message.answer(
+            "❌ Введите промокод."
+        )
+        return
+
+    await ensure_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name,
     )
+
+    success, result = await use_promo(
+        message.from_user.id,
+        code,
+    )
+
+    await state.clear()
+
+    await message.answer(
+        result
+    )
+
+
+# ============================================================
+# COMMAND PREMIUM
+# ============================================================
+
+@dp.message(Command("premium"))
+async def premium_command(
+    message: Message,
+):
+    await show_premium(message)
 
 
 # ============================================================
 # BUSINESS CONNECTION
 # ============================================================
 
-def save_business_connection(
-    connection
-):
-
-    user = connection.user
-    timestamp = now_iso()
-
-    db.execute("""
-        INSERT INTO business_connections (
-            connection_id,
-            user_id,
-            user_chat_id,
-            first_name,
-            last_name,
-            username,
-            is_enabled,
-            created_at,
-            updated_at
-        )
-
-        VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?
-        )
-
-        ON CONFLICT(connection_id)
-
-        DO UPDATE SET
-
-            user_id = excluded.user_id,
-            user_chat_id = excluded.user_chat_id,
-
-            first_name = excluded.first_name,
-            last_name = excluded.last_name,
-            username = excluded.username,
-
-            is_enabled = excluded.is_enabled,
-
-            updated_at = excluded.updated_at
-    """, (
-        connection.id,
-
-        user.id,
-
-        connection.user_chat_id,
-
-        user.first_name,
-        user.last_name,
-        user.username,
-
-        1 if connection.is_enabled else 0,
-
-        timestamp,
-        timestamp
-    ))
-
-    db.commit()
-
-    ensure_user(
-        user
-    )
-
-
-def get_connection(
-    connection_id
-):
-
-    cursor = db.execute("""
-        SELECT
-
-            connection_id,
-            user_id,
-            user_chat_id,
-
-            first_name,
-            last_name,
-            username,
-
-            is_enabled
-
-        FROM business_connections
-
-        WHERE connection_id = ?
-
-        LIMIT 1
-    """, (
-        connection_id,
-    ))
-
-    return cursor.fetchone()
-
-
-async def get_business_connection(
-    connection_id
-):
-
-    saved = get_connection(
-        connection_id
-    )
-
-    if saved:
-        return saved
-
-    try:
-
-        connection = await bot.get_business_connection(
-            business_connection_id=connection_id
-        )
-
-        save_business_connection(
-            connection
-        )
-
-        return get_connection(
-            connection_id
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Ошибка получения Business Connection %s: %s",
-            connection_id,
-            e
-        )
-
-        return None
-
-
-async def get_owner_id(
-    connection_id
-):
-
-    connection = await get_business_connection(
-        connection_id
-    )
-
-    if not connection:
-        return None
-
-    return connection[1]
-
-
-async def get_log_chat_id(
-    connection_id
-):
-
-    connection = await get_business_connection(
-        connection_id
-    )
-
-    if not connection:
-        return None
-
-    return connection[2]
-
-
-# ============================================================
-# BUSINESS CONNECTION HANDLER
-# ============================================================
-
 @dp.business_connection()
 async def business_connection_handler(
-    connection
+    message: Message,
 ):
+    connection = message.business_connection
 
-    logger.info(
-        "========================================"
-    )
+    current_time = now_ts()
 
-    logger.info(
-        "BUSINESS CONNECTION"
-    )
+    async with db_lock:
+        cursor = db.cursor()
 
-    logger.info(
-        "connection_id=%s",
-        connection.id
-    )
-
-    logger.info(
-        "user_id=%s",
-        connection.user.id
-    )
-
-    logger.info(
-        "user_chat_id=%s",
-        connection.user_chat_id
-    )
-
-    logger.info(
-        "enabled=%s",
-        connection.is_enabled
-    )
-
-    save_business_connection(
-        connection
-    )
-
-    try:
-
-        if connection.is_enabled:
-
-            text = (
-
-                "🟢 <b>Business Bot подключён</b>\n\n"
-
-                f"👤 Аккаунт:\n"
-                f"{escape_text(connection.user.full_name)}\n\n"
-
-                f"🆔 ID:\n"
-                f"<code>{connection.user.id}</code>\n\n"
-
-                "Мониторинг личных чатов включён.\n\n"
-
-                "💎 Premium управляется "
-                "через меню бота."
+        cursor.execute(
+            """
+            INSERT INTO business_connections (
+                business_connection_id,
+                user_chat_id,
+                can_reply,
+                is_enabled,
+                created_at,
+                updated_at
             )
-
-        else:
-
-            text = (
-
-                "🔴 <b>Business Bot отключён</b>\n\n"
-
-                f"👤 Аккаунт:\n"
-                f"{escape_text(connection.user.full_name)}\n\n"
-
-                f"🆔 ID:\n"
-                f"<code>{connection.user.id}</code>"
-            )
-
-        await bot.send_message(
-            connection.user_chat_id,
-            text,
-            parse_mode="HTML"
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(business_connection_id)
+            DO UPDATE SET
+                user_chat_id = excluded.user_chat_id,
+                can_reply = excluded.can_reply,
+                is_enabled = excluded.is_enabled,
+                updated_at = excluded.updated_at
+            """,
+            (
+                connection.id,
+                connection.user.id,
+                1 if connection.can_reply else 0,
+                1 if connection.is_enabled else 0,
+                current_time,
+                current_time,
+            ),
         )
 
-    except Exception as e:
+        db.commit()
 
-        logger.exception(
-            "Ошибка уведомления Business Connection: %s",
-            e
-        )
+    logger.info(
+        "Business connection: id=%s user=%s enabled=%s can_reply=%s",
+        connection.id,
+        connection.user.id,
+        connection.is_enabled,
+        connection.can_reply,
+    )
 
 
 # ============================================================
-# MESSAGE DATABASE
+# SAVE BUSINESS MESSAGE
 # ============================================================
 
-def save_message(
-    connection_id,
-    message: Message
+async def save_business_message(
+    message: Message,
 ):
+    business_connection_id = message.business_connection_id
 
-    sender_id, sender_name, sender_username = (
-        get_sender_info(message)
+    if not business_connection_id:
+        return
+
+    chat = message.chat
+
+    if chat.type != "private":
+        return
+
+    # --------------------------------------------------------
+    # Находим владельца Business connection
+    # --------------------------------------------------------
+
+    cursor = db.cursor()
+
+    cursor.execute(
+        """
+        SELECT user_chat_id
+        FROM business_connections
+        WHERE business_connection_id = ?
+        """,
+        (business_connection_id,),
     )
 
-    message_type = get_message_type(
-        message
-    )
+    connection = cursor.fetchone()
 
-    text = get_message_text(
-        message
-    )
+    if not connection:
+        return
+
+    owner_id = connection["user_chat_id"]
+
+    # --------------------------------------------------------
+    # Не сохраняем собственные сообщения владельца
+    # --------------------------------------------------------
+
+    if message.from_user:
+        if message.from_user.id == owner_id:
+            return
+
+    # --------------------------------------------------------
+    # PHOTO
+    # --------------------------------------------------------
 
     photo_file_id = None
-
-    photo_has_spoiler = 0
+    photo_width = None
+    photo_height = None
 
     if message.photo:
 
-        photo_file_id = (
-            message.photo[-1].file_id
+        largest_photo = message.photo[-1]
+
+        photo_file_id = largest_photo.file_id
+        photo_width = largest_photo.width
+        photo_height = largest_photo.height
+
+    # --------------------------------------------------------
+    # TEXT
+    # --------------------------------------------------------
+
+    text = message.text
+    caption = message.caption
+
+    username = None
+    first_name = None
+    user_id = None
+
+    if message.from_user:
+
+        user_id = message.from_user.id
+        username = message.from_user.username
+        first_name = message.from_user.first_name
+
+    async with db_lock:
+        cursor = db.cursor()
+
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO messages (
+                business_connection_id,
+                chat_id,
+                message_id,
+
+                user_id,
+                username,
+                first_name,
+
+                text,
+                caption,
+
+                photo_file_id,
+                photo_width,
+                photo_height,
+
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                business_connection_id,
+                chat.id,
+                message.message_id,
+
+                user_id,
+                username,
+                first_name,
+
+                text,
+                caption,
+
+                photo_file_id,
+                photo_width,
+                photo_height,
+
+                now_ts(),
+            ),
         )
 
-        photo_has_spoiler = (
-            1
-            if message.has_media_spoiler
-            else 0
-        )
-
-    caption = (
-        message.caption
-        or ""
-    )
-
-    timestamp = now_iso()
-
-    db.execute("""
-        INSERT INTO messages (
-
-            connection_id,
-            chat_id,
-            message_id,
-
-            sender_id,
-            sender_name,
-            sender_username,
-
-            text,
-            message_type,
-
-            photo_file_id,
-            photo_has_spoiler,
-
-            caption,
-
-            created_at,
-            updated_at
-        )
-
-        VALUES (
-
-            ?, ?, ?,
-
-            ?, ?, ?,
-
-            ?, ?,
-
-            ?, ?,
-
-            ?,
-
-            ?, ?
-        )
-
-        ON CONFLICT(
-            connection_id,
-            chat_id,
-            message_id
-        )
-
-        DO UPDATE SET
-
-            sender_id = excluded.sender_id,
-            sender_name = excluded.sender_name,
-            sender_username = excluded.sender_username,
-
-            text = excluded.text,
-            message_type = excluded.message_type,
-
-            photo_file_id = excluded.photo_file_id,
-            photo_has_spoiler = excluded.photo_has_spoiler,
-
-            caption = excluded.caption,
-
-            updated_at = excluded.updated_at
-    """, (
-
-        connection_id,
-        message.chat.id,
-        message.message_id,
-
-        sender_id,
-        sender_name,
-        sender_username,
-
-        text,
-        message_type,
-
-        photo_file_id,
-        photo_has_spoiler,
-
-        caption,
-
-        timestamp,
-        timestamp
-    ))
-
-    db.commit()
-
-
-def get_saved_message(
-    connection_id,
-    chat_id,
-    message_id
-):
-
-    cursor = db.execute("""
-        SELECT
-
-            sender_id,
-            sender_name,
-            sender_username,
-
-            text,
-            message_type,
-
-            photo_file_id,
-            photo_has_spoiler,
-
-            caption,
-            created_at
-
-        FROM messages
-
-        WHERE connection_id = ?
-
-        AND chat_id = ?
-
-        AND message_id = ?
-
-        LIMIT 1
-    """, (
-        connection_id,
-        chat_id,
-        message_id
-    ))
-
-    return cursor.fetchone()
+        db.commit()
 
 
 # ============================================================
-# SENDER FORMAT
-# ============================================================
-
-def format_sender(
-    sender_id,
-    sender_name,
-    sender_username
-):
-
-    result = (
-        f"<b>{escape_text(sender_name)}</b>"
-    )
-
-    if sender_username:
-
-        result += (
-            f" (@{escape_text(sender_username)})"
-        )
-
-    if sender_id:
-
-        result += (
-            f"\nID: <code>{sender_id}</code>"
-        )
-
-    return result
-
-
-# ============================================================
-# NEW BUSINESS MESSAGE
+# BUSINESS MESSAGE
 # ============================================================
 
 @dp.business_message()
 async def business_message_handler(
-    message: Message
+    message: Message,
 ):
-
-    if not is_private_message(message):
-        return
-
-    connection_id = (
-        message.business_connection_id
-    )
-
-    if not connection_id:
-        return
-
-    owner_id = await get_owner_id(
-        connection_id
-    )
-
-    if owner_id is None:
-        return
-
-    sender_id = (
-
-        message.from_user.id
-
-        if message.from_user
-
-        else None
-    )
-
-    # --------------------------------------------------------
-    # Сохраняем сообщение
-    # --------------------------------------------------------
-
-    save_message(
-        connection_id,
-        message
-    )
-
-    logger.info(
-        "NEW | conn=%s chat=%s msg=%s sender=%s type=%s reply=%s",
-        connection_id,
-        message.chat.id,
-        message.message_id,
-        sender_id,
-        get_message_type(message),
-        bool(message.reply_to_message)
-    )
-
-    # --------------------------------------------------------
-    # Сообщения владельца не логируем
-    # --------------------------------------------------------
-
-    if (
-
-        sender_id is not None
-
-        and sender_id == owner_id
-
-    ):
-
-        return
-
-    # ========================================================
-    # REPLY
-    # ========================================================
-
-    if not message.reply_to_message:
-
-        return
-
-    replied_message_id = (
-        message.reply_to_message.message_id
-    )
-
-    saved = get_saved_message(
-
-        connection_id,
-
-        message.chat.id,
-
-        replied_message_id
-    )
-
-    if not saved:
-
-        return
-
-    (
-        saved_sender_id,
-        saved_sender_name,
-        saved_sender_username,
-
-        old_text,
-        message_type,
-
-        photo_file_id,
-        photo_has_spoiler,
-
-        caption,
-        created_at
-
-    ) = saved
-
-    # ========================================================
-    # REPLY НА СОХРАНЁННОЕ ФОТО
-    # ========================================================
-
-    if (
-
-        message_type != "photo"
-
-        or not photo_file_id
-
-    ):
-
-        return
-
-    log_chat_id = await get_log_chat_id(
-        connection_id
-    )
-
-    if not log_chat_id:
-        return
-
-    sender_info = format_sender(
-
-        saved_sender_id,
-        saved_sender_name,
-        saved_sender_username
-    )
-
-    caption_text = (
-        caption
-        or "Без подписи"
-    )
-
-    log_caption = (
-
-        "🔗 <b>ФОТО — REPLY</b>\n\n"
-
-        f"👤 <b>Отправитель:</b>\n"
-        f"{sender_info}\n\n"
-
-        f"💬 <b>Чат:</b> "
-        f"<code>{message.chat.id}</code>\n"
-
-        f"🆔 <b>Message ID:</b> "
-        f"<code>{replied_message_id}</code>\n\n"
-
-        f"📝 <b>Подпись:</b>\n"
-        f"{escape_text(caption_text)}"
-    )
-
     try:
-
-        await bot.send_photo(
-
-            chat_id=log_chat_id,
-
-            photo=photo_file_id,
-
-            caption=log_caption,
-
-            parse_mode="HTML",
-
-            has_spoiler=False
-        )
-
-        logger.info(
-            "REPLY PHOTO SENT | original=%s",
-            replied_message_id
-        )
-
+        await save_business_message(message)
     except Exception as e:
-
         logger.exception(
-            "Ошибка отправки фото по Reply: %s",
-            e
+            "Ошибка сохранения business message: %s",
+            e,
         )
 
 
@@ -2392,538 +1698,436 @@ async def business_message_handler(
 
 @dp.edited_business_message()
 async def edited_business_message_handler(
-    message: Message
+    message: Message,
 ):
-
-    if not is_private_message(message):
-        return
-
-    connection_id = (
+    business_connection_id = (
         message.business_connection_id
     )
 
-    if not connection_id:
+    if not business_connection_id:
         return
 
-    old = get_saved_message(
+    if message.chat.type != "private":
+        return
 
-        connection_id,
+    cursor = db.cursor()
 
-        message.chat.id,
-
-        message.message_id
+    cursor.execute(
+        """
+        SELECT user_chat_id
+        FROM business_connections
+        WHERE business_connection_id = ?
+        """,
+        (business_connection_id,),
     )
 
-    owner_id = await get_owner_id(
-        connection_id
-    )
+    connection = cursor.fetchone()
 
-    if old:
+    if not connection:
+        return
 
-        (
-            sender_id,
-            sender_name,
-            sender_username,
-
-            old_text,
-            message_type,
-
-            photo_file_id,
-            photo_has_spoiler,
-
-            caption,
-            created_at
-
-        ) = old
-
-    else:
-
-        sender_id = (
-
-            message.from_user.id
-
-            if message.from_user
-
-            else None
-        )
-
-        sender_name = (
-
-            message.from_user.full_name
-
-            if message.from_user
-
-            else "Неизвестный"
-        )
-
-        sender_username = (
-
-            message.from_user.username
-
-            if message.from_user
-
-            else None
-        )
-
-        old_text = (
-            "[Старая версия не сохранена]"
-        )
+    owner_id = connection["user_chat_id"]
 
     if (
-
-        owner_id is not None
-
-        and sender_id == owner_id
-
+        message.from_user
+        and message.from_user.id == owner_id
     ):
-
-        save_message(
-            connection_id,
-            message
-        )
-
         return
+
+    # --------------------------------------------------------
+    # Старое сообщение
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM messages
+        WHERE
+            business_connection_id = ?
+            AND chat_id = ?
+            AND message_id = ?
+        """,
+        (
+            business_connection_id,
+            message.chat.id,
+            message.message_id,
+        ),
+    )
+
+    old_message = cursor.fetchone()
+
+    old_text = ""
+
+    if old_message:
+
+        old_text = (
+            old_message["text"]
+            or old_message["caption"]
+            or ""
+        )
 
     new_text = (
-        get_message_text(message)
-        or "[сообщение без текста]"
+        message.text
+        or message.caption
+        or ""
     )
 
-    old_text = (
-        old_text
-        or "[сообщение без текста]"
-    )
+    # --------------------------------------------------------
+    # Обновляем сохранённое сообщение
+    # --------------------------------------------------------
 
-    if old_text == new_text:
+    await save_business_message(message)
 
-        save_message(
-            connection_id,
-            message
-        )
+    # --------------------------------------------------------
+    # Уведомление владельцу
+    # --------------------------------------------------------
 
-        return
+    sender_name = "Пользователь"
 
-    log_chat_id = await get_log_chat_id(
-        connection_id
-    )
+    if message.from_user:
 
-    if not log_chat_id:
-        return
+        if message.from_user.first_name:
+            sender_name = message.from_user.first_name
 
-    sender_info = format_sender(
+        if message.from_user.username:
+            sender_name += (
+                f" (@{message.from_user.username})"
+            )
 
-        sender_id,
-        sender_name,
-        sender_username
-    )
-
-    log_text = (
-
-        "✏️ <b>СООБЩЕНИЕ ИЗМЕНЕНО</b>\n\n"
-
-        f"👤 <b>Собеседник:</b>\n"
-        f"{sender_info}\n\n"
-
-        f"💬 <b>Чат:</b> "
-        f"<code>{message.chat.id}</code>\n"
-
-        f"🆔 <b>Message ID:</b> "
-        f"<code>{message.message_id}</code>\n\n"
-
-        "🔴 <b>БЫЛО:</b>\n"
-
-        f"<blockquote>"
-        f"{escape_text(old_text)}"
-        f"</blockquote>\n\n"
-
-        "🟢 <b>СТАЛО:</b>\n"
-
-        f"<blockquote>"
-        f"{escape_text(new_text)}"
-        f"</blockquote>"
+    text = (
+        "✏️ <b>Сообщение изменено</b>\n\n"
+        f"👤 {escape_text(sender_name)}\n\n"
+        f"<b>Было:</b>\n"
+        f"{escape_text(old_text) if old_text else '—'}\n\n"
+        f"<b>Стало:</b>\n"
+        f"{escape_text(new_text) if new_text else '—'}"
     )
 
     try:
-
         await bot.send_message(
-
-            log_chat_id,
-
-            log_text,
-
-            parse_mode="HTML"
+            chat_id=owner_id,
+            text=text,
         )
-
     except Exception as e:
-
         logger.exception(
-            "Ошибка edit log: %s",
-            e
+            "Не удалось отправить уведомление об изменении: %s",
+            e,
         )
-
-    save_message(
-        connection_id,
-        message
-    )
 
 
 # ============================================================
 # DELETED BUSINESS MESSAGES
 # ============================================================
 
+async def get_deleted_message_records(
+    business_connection_id: str,
+    chat_id: int,
+    message_ids: list[int],
+):
+    if not message_ids:
+        return []
+
+    placeholders = ",".join(
+        "?" for _ in message_ids
+    )
+
+    query = f"""
+        SELECT *
+        FROM messages
+        WHERE
+            business_connection_id = ?
+            AND chat_id = ?
+            AND message_id IN ({placeholders})
+        ORDER BY message_id ASC
+    """
+
+    cursor = db.cursor()
+
+    cursor.execute(
+        query,
+        (
+            business_connection_id,
+            chat_id,
+            *message_ids,
+        ),
+    )
+
+    return cursor.fetchall()
+
+
 @dp.deleted_business_messages()
 async def deleted_business_messages_handler(
-    event
+    update,
 ):
+    business_connection_id = (
+        update.business_connection_id
+    )
 
-    if event.chat.type != "private":
+    if not business_connection_id:
         return
 
-    connection_id = (
-        event.business_connection_id
-    )
+    chat = update.chat
 
-    chat_id = event.chat.id
-
-    owner_id = await get_owner_id(
-        connection_id
-    )
-
-    log_chat_id = await get_log_chat_id(
-        connection_id
-    )
-
-    if not log_chat_id:
+    if chat.type != "private":
         return
 
-    # Проверяем Premium владельца Business-аккаунта.
-    premium_active = has_premium(
-        owner_id
+    cursor = db.cursor()
+
+    cursor.execute(
+        """
+        SELECT user_chat_id
+        FROM business_connections
+        WHERE business_connection_id = ?
+        """,
+        (business_connection_id,),
     )
 
-    for message_id in event.message_ids:
+    connection = cursor.fetchone()
 
-        # ====================================================
-        # БЕЗ PREMIUM
-        # ====================================================
+    if not connection:
+        return
 
-        if not premium_active:
+    owner_id = connection["user_chat_id"]
 
-            try:
+    message_ids = list(
+        update.message_ids
+    )
 
-                await bot.send_message(
+    if not message_ids:
+        return
 
-                    log_chat_id,
+    # --------------------------------------------------------
+    # Проверяем Premium
+    # --------------------------------------------------------
 
-                    "🗑 <b>ПОЛЬЗОВАТЕЛЬ УДАЛИЛ СООБЩЕНИЕ</b>\n\n"
+    if not is_premium(owner_id):
 
-                    "🔒 Содержимое сообщения доступно "
-                    "только пользователям с активным Premium.\n\n"
+        count = len(message_ids)
 
-                    "⭐ Оформи Premium, чтобы получить "
-                    "доступ к сохранённой истории.",
+        if count == 1:
+            text = (
+                "🗑 <b>Пользователь удалил сообщение</b>\n\n"
+                "Чтобы получать информацию об удалённых "
+                "сообщениях, необходим Premium."
+            )
+        else:
+            text = (
+                f"🗑 <b>Пользователь удалил "
+                f"{count} сообщений</b>\n\n"
+                "Чтобы получать информацию об удалённых "
+                "сообщениях, необходим Premium."
+            )
 
-                    parse_mode="HTML",
-
-                    reply_markup=get_buy_keyboard()
-                )
-
-            except Exception as e:
-
-                logger.exception(
-                    "Ошибка Premium delete notification: %s",
-                    e
-                )
-
-            continue
-
-        # ====================================================
-        # PREMIUM
-        # ====================================================
-
-        saved = get_saved_message(
-
-            connection_id,
-
-            chat_id,
-
-            message_id
+        await bot.send_message(
+            chat_id=owner_id,
+            text=text,
+            reply_markup=buy_premium_keyboard(),
         )
 
-        if not saved:
+        return
 
-            log_text = (
+    # --------------------------------------------------------
+    # Premium — достаём сохранённые сообщения
+    # --------------------------------------------------------
 
-                "🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>\n\n"
+    records = await get_deleted_message_records(
+        business_connection_id,
+        chat.id,
+        message_ids,
+    )
 
-                f"💬 <b>Чат:</b> "
-                f"<code>{chat_id}</code>\n"
+    if not records:
 
-                f"🆔 <b>Message ID:</b> "
-                f"<code>{message_id}</code>\n\n"
-
-                "⚠️ Содержимое отсутствует "
-                "в локальной базе."
-            )
-
-            try:
-
-                await bot.send_message(
-
-                    log_chat_id,
-
-                    log_text,
-
-                    parse_mode="HTML"
-                )
-
-            except Exception as e:
-
-                logger.exception(
-                    "Ошибка delete log: %s",
-                    e
-                )
-
-            continue
-
-        (
-            sender_id,
-            sender_name,
-            sender_username,
-
-            message_text,
-            message_type,
-
-            photo_file_id,
-            photo_has_spoiler,
-
-            caption,
-            created_at
-
-        ) = saved
-
-        if (
-
-            owner_id is not None
-
-            and sender_id == owner_id
-
-        ):
-
-            continue
-
-        sender_info = format_sender(
-
-            sender_id,
-            sender_name,
-            sender_username
+        await bot.send_message(
+            chat_id=owner_id,
+            text=(
+                "🗑 <b>Сообщение удалено</b>\n\n"
+                "Сохранённых данных этого сообщения нет."
+            ),
         )
 
-        # ----------------------------------------------------
-        # УДАЛЁННОЕ ФОТО
-        # ----------------------------------------------------
+        return
 
-        if (
+    for record in records:
 
-            message_type == "photo"
+        sender_name = (
+            record["first_name"]
+            or "Пользователь"
+        )
 
-            and photo_file_id
-
-        ):
-
-            caption_text = (
-                caption
-                or "Без подписи"
+        if record["username"]:
+            sender_name += (
+                f" (@{record['username']})"
             )
 
-            log_caption = (
+        # ----------------------------------------------------
+        # PHOTO
+        # ----------------------------------------------------
 
-                "🗑 <b>ФОТО УДАЛЕНО</b>\n\n"
+        if record["photo_file_id"]:
 
-                f"👤 <b>Собеседник:</b>\n"
-                f"{sender_info}\n\n"
-
-                f"💬 <b>Чат:</b> "
-                f"<code>{chat_id}</code>\n"
-
-                f"🆔 <b>Message ID:</b> "
-                f"<code>{message_id}</code>\n\n"
-
-                f"📝 <b>Подпись:</b>\n"
-                f"{escape_text(caption_text)}"
+            caption = (
+                record["caption"]
+                or ""
             )
+
+            notification = (
+                "🗑 <b>Сообщение удалено</b>\n\n"
+                f"👤 {escape_text(sender_name)}"
+            )
+
+            if caption:
+                notification += (
+                    "\n\n"
+                    f"💬 {escape_text(caption)}"
+                )
 
             try:
-
                 await bot.send_photo(
-
-                    log_chat_id,
-
-                    photo_file_id,
-
-                    caption=log_caption,
-
-                    parse_mode="HTML",
-
-                    has_spoiler=False
+                    chat_id=owner_id,
+                    photo=record["photo_file_id"],
+                    caption=notification,
                 )
 
             except Exception as e:
-
                 logger.exception(
                     "Ошибка отправки удалённого фото: %s",
-                    e
+                    e,
                 )
 
             continue
 
         # ----------------------------------------------------
-        # УДАЛЁННЫЙ ТЕКСТ
+        # TEXT
         # ----------------------------------------------------
 
-        if not message_text:
-
-            message_text = (
-
-                f"[{message_type}] "
-                "сообщение без текста"
-            )
-
-        log_text = (
-
-            "🗑 <b>СООБЩЕНИЕ УДАЛЕНО</b>\n\n"
-
-            f"👤 <b>Собеседник:</b>\n"
-            f"{sender_info}\n\n"
-
-            f"💬 <b>Чат:</b> "
-            f"<code>{chat_id}</code>\n"
-
-            f"🆔 <b>Message ID:</b> "
-            f"<code>{message_id}</code>\n\n"
-
-            "📄 <b>Содержимое:</b>\n"
-
-            f"<blockquote>"
-            f"{escape_text(message_text)}"
-            f"</blockquote>\n\n"
-
-            f"🕒 <b>Сохранено:</b>\n"
-            f"<code>{escape_text(created_at)}</code>"
+        message_text = (
+            record["text"]
+            or record["caption"]
+            or ""
         )
 
-        try:
+        text = (
+            "🗑 <b>Сообщение удалено</b>\n\n"
+            f"👤 {escape_text(sender_name)}\n\n"
+            f"💬 {escape_text(message_text)}"
+        )
 
-            await bot.send_message(
-
-                log_chat_id,
-
-                log_text,
-
-                parse_mode="HTML"
-            )
-
-        except Exception as e:
-
-            logger.exception(
-                "Ошибка delete text log: %s",
-                e
-            )
+        await bot.send_message(
+            chat_id=owner_id,
+            text=text,
+        )
 
 
 # ============================================================
-# MAIN
+# HELP
+# ============================================================
+
+@dp.message(Command("help"))
+async def help_command(
+    message: Message,
+):
+    await message.answer(
+        """
+<b>🐻‍❄️ SpyNeScamBot</b>
+
+<b>Основные команды:</b>
+
+/start — подключение бота
+/premium — Premium
+/profile — профиль
+
+Для подключения откройте раздел автоматизации чатов Telegram и добавьте:
+
+<code>@SpyNeScamBot</code>
+""",
+        reply_markup=connect_keyboard(),
+    )
+
+
+# ============================================================
+# UNKNOWN TEXT
+# ============================================================
+
+@dp.message()
+async def unknown_message(
+    message: Message,
+):
+    # Если пользователь что-то написал вне FSM,
+    # не отправляем ему "👇 Меню".
+    #
+    # Просто показываем основное меню-клавиатуру.
+    await message.answer(
+        "Выберите нужный раздел.",
+        reply_markup=main_keyboard(),
+    )
+
+
+# ============================================================
+# BOT COMMANDS
+# ============================================================
+
+async def set_commands():
+    commands = [
+        BotCommand(
+            command="start",
+            description="Запустить бота",
+        ),
+        BotCommand(
+            command="premium",
+            description="Купить Premium",
+        ),
+        BotCommand(
+            command="profile",
+            description="Мой профиль",
+        ),
+        BotCommand(
+            command="help",
+            description="Помощь",
+        ),
+    ]
+
+    await bot.set_my_commands(commands)
+
+
+# ============================================================
+# STARTUP
 # ============================================================
 
 async def main():
+    init_db()
 
-    if not BOT_TOKEN:
-
-        raise RuntimeError(
-            "BOT_TOKEN не указан! "
-            "Вставь токен в переменную BOT_TOKEN."
-        )
+    await set_commands()
 
     logger.info(
-        "=========================================="
+        "SpyNeScamBot запускается..."
     )
 
     logger.info(
-        "Telegram Business Message Monitor"
-    )
-
-    logger.info(
-        "Premium: ENABLED"
-    )
-
-    logger.info(
-        "Telegram Stars: ENABLED"
-    )
-
-    logger.info(
-        "Promo codes: ENABLED"
-    )
-
-    logger.info(
-        "Profile: ENABLED"
-    )
-
-    logger.info(
-        "Delete monitor: ENABLED"
-    )
-
-    logger.info(
-        "=========================================="
+        "Business Monitor + Premium + Stars"
     )
 
     await dp.start_polling(
-
         bot,
-
         allowed_updates=[
-
             "message",
-
             "business_connection",
-
             "business_message",
-
             "edited_business_message",
-
             "deleted_business_messages",
-
-            "callback_query",
-
-            "pre_checkout_query"
-        ]
+            "pre_checkout_query",
+        ],
     )
 
 
 # ============================================================
-# ENTRY POINT
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
-
     try:
-
-        asyncio.run(
-            main()
-        )
-
+        asyncio.run(main())
     except KeyboardInterrupt:
-
-        logger.info(
-            "Бот остановлен."
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Критическая ошибка: %s",
-            e
-        )
-
+        logger.info("Бот остановлен.")
     finally:
-
         db.close()

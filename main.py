@@ -28,7 +28,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 # НАСТРОЙКИ
 # ============================================================
 
-BOT_TOKEN = ""
+BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
 
 DB_PATH = "business_monitor.db"
 

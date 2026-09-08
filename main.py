@@ -30,7 +30,7 @@ from aiogram.utils.keyboard import (
 # НАСТРОЙКИ
 # ============================================================
 
-BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
+BOT_TOKEN = ""
 
 DB_PATH = "business_monitor.db"
 
@@ -316,9 +316,12 @@ def init_db():
                 """
                 CREATE TABLE promo_uses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+
                     user_id INTEGER NOT NULL,
                     promo_code TEXT NOT NULL,
+
                     created_at INTEGER NOT NULL,
+
                     UNIQUE(user_id, promo_code)
                 )
                 """
@@ -504,7 +507,7 @@ def connect_keyboard():
     builder.row(
         InlineKeyboardButton(
             text="⚙️ Открыть настройки",
-            url="tg://settings/edit",
+            url="tg://settings",
         )
     )
 
@@ -549,6 +552,30 @@ def premium_keyboard(
 
     return builder.as_markup()
 
+
+# ============================================================
+# КНОПКА ОПЛАТЫ В INVOICE
+# ============================================================
+
+def payment_keyboard(
+    price: int,
+):
+
+    builder = InlineKeyboardBuilder()
+
+    builder.row(
+        InlineKeyboardButton(
+            text=f"💳 Оплатить ⭐{price}",
+            pay=True,
+        )
+    )
+
+    return builder.as_markup()
+
+
+# ============================================================
+# КНОПКА PREMIUM ДЛЯ УДАЛЕННЫХ СООБЩЕНИЙ
+# ============================================================
 
 def buy_premium_keyboard():
 
@@ -724,7 +751,7 @@ async def use_promo(
         try:
 
             # ------------------------------------------------
-            # Этот пользователь уже использовал этот код?
+            # ПРОВЕРЯЕМ ПОВТОРНОЕ ИСПОЛЬЗОВАНИЕ
             # ------------------------------------------------
 
             cursor.execute(
@@ -989,7 +1016,7 @@ START_TEXT = """
 
 5️⃣ Выберите бота и нажмите <b>«Добавить»</b>.
 
-✅ После этого подключение готово.
+✅ Готово!
 """
 
 
@@ -1004,7 +1031,10 @@ async def cmd_start(
         message.from_user.first_name,
     )
 
-    # Маленькое первое сообщение
+    # --------------------------------------------------------
+    # КОМПАКТНОЕ ПЕРВОЕ СООБЩЕНИЕ
+    # --------------------------------------------------------
+
     await message.answer(
         (
             "🐻‍❄️ <b>SpyNeScamBot</b>\n\n"
@@ -1014,7 +1044,10 @@ async def cmd_start(
         reply_markup=main_keyboard(),
     )
 
-    # Компактная инструкция
+    # --------------------------------------------------------
+    # ИНСТРУКЦИЯ
+    # --------------------------------------------------------
+
     await message.answer(
         START_TEXT,
         reply_markup=connect_keyboard(),
@@ -1121,7 +1154,7 @@ async def premium_callback(
 
 
 # ============================================================
-# ⭐ ПРЯМАЯ ОПЛАТА
+# ПОКУПКА PREMIUM
 # ============================================================
 
 @dp.callback_query(F.data.startswith("buy:"))
@@ -1145,6 +1178,10 @@ async def buy_plan(
         plan_key,
     )
 
+    # --------------------------------------------------------
+    # ПРОВЕРКА ТАРИФА
+    # --------------------------------------------------------
+
     if plan_key not in PLANS:
 
         await callback.answer(
@@ -1154,6 +1191,10 @@ async def buy_plan(
 
         return
 
+    # --------------------------------------------------------
+    # USER
+    # --------------------------------------------------------
+
     await ensure_user(
         user_id,
         callback.from_user.username,
@@ -1162,27 +1203,30 @@ async def buy_plan(
 
     plan = PLANS[plan_key]
 
+    # --------------------------------------------------------
+    # ЦЕНА
+    # --------------------------------------------------------
+
     price = get_plan_price(
         user_id,
         plan_key,
     )
 
     # --------------------------------------------------------
-    # Очень важно:
-    # сразу подтверждаем нажатие кнопки.
+    # УБИРАЕМ ЗАГРУЗКУ С КНОПКИ
     # --------------------------------------------------------
 
     await callback.answer()
 
     # --------------------------------------------------------
-    # Уникальный payload
+    # УНИКАЛЬНЫЙ PAYLOAD
     # --------------------------------------------------------
 
     payload = (
         f"premium:"
         f"{plan_key}:"
         f"{user_id}:"
-        f"{int(time.time())}"
+        f"{int(time.time() * 1000)}"
     )
 
     logger.info(
@@ -1197,10 +1241,11 @@ async def buy_plan(
     try:
 
         # ====================================================
-        # СТАРАЯ РАБОЧАЯ СХЕМА
+        # ОТПРАВЛЯЕМ НОВОЕ СООБЩЕНИЕ-СЧЁТ
         # ====================================================
 
         await callback.message.answer_invoice(
+
             title=(
                 f"Premium — "
                 f"{plan['name']}"
@@ -1209,7 +1254,8 @@ async def buy_plan(
             description=(
                 f"Premium на "
                 f"{plan['name']}."
-                + (
+                +
+                (
                     " Применена скидка 10%."
                     if has_discount(user_id)
                     else ""
@@ -1218,7 +1264,18 @@ async def buy_plan(
 
             payload=payload,
 
+            # =================================================
+            # TELEGRAM STARS
+            # =================================================
+
             currency="XTR",
+
+            # Для Telegram Stars provider token не нужен.
+            provider_token="",
+
+            # =================================================
+            # ЦЕНА
+            # =================================================
 
             prices=[
                 LabeledPrice(
@@ -1229,34 +1286,37 @@ async def buy_plan(
                     amount=price,
                 )
             ],
+
+            # =================================================
+            # НАСТОЯЩАЯ КНОПКА ОПЛАТЫ
+            # =================================================
+
+            reply_markup=payment_keyboard(
+                price
+            ),
         )
 
         logger.info(
-            "STARS INVOICE SENT | "
-            "user=%s | plan=%s",
+            "INVOICE SENT SUCCESSFULLY | "
+            "user=%s | plan=%s | price=%s",
             user_id,
             plan_key,
+            price,
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "STARS INVOICE ERROR"
+            "INVOICE CREATION ERROR"
         )
 
-        try:
-
-            await callback.message.answer(
-                (
-                    "❌ <b>Не удалось создать оплату.</b>\n\n"
-                    "Попробуйте выбрать тариф ещё раз."
-                ),
-                reply_markup=main_keyboard(),
-            )
-
-        except Exception:
-
-            pass
+        await callback.message.answer(
+            (
+                "❌ <b>Не удалось создать оплату.</b>\n\n"
+                "Попробуйте выбрать тариф ещё раз."
+            ),
+            reply_markup=main_keyboard(),
+        )
 
 
 # ============================================================
@@ -1277,10 +1337,12 @@ async def pre_checkout_handler(
         query.currency,
     )
 
-    payload = query.invoice_payload
+    payload = (
+        query.invoice_payload
+    )
 
     # --------------------------------------------------------
-    # Проверяем payload
+    # PAYLOAD
     # --------------------------------------------------------
 
     if not payload.startswith(
@@ -1315,6 +1377,10 @@ async def pre_checkout_handler(
 
     plan_key = parts[1]
 
+    # --------------------------------------------------------
+    # USER ID
+    # --------------------------------------------------------
+
     try:
 
         payload_user_id = int(
@@ -1331,7 +1397,7 @@ async def pre_checkout_handler(
         return
 
     # --------------------------------------------------------
-    # Проверяем пользователя
+    # USER
     # --------------------------------------------------------
 
     if (
@@ -1354,7 +1420,7 @@ async def pre_checkout_handler(
         return
 
     # --------------------------------------------------------
-    # Проверяем тариф
+    # PLAN
     # --------------------------------------------------------
 
     if plan_key not in PLANS:
@@ -1367,13 +1433,13 @@ async def pre_checkout_handler(
         return
 
     # --------------------------------------------------------
-    # Проверяем валюту
+    # CURRENCY
     # --------------------------------------------------------
 
     if query.currency != "XTR":
 
         logger.error(
-            "PRE_CHECKOUT WRONG CURRENCY: %s",
+            "PRE_CHECKOUT WRONG CURRENCY | %s",
             query.currency,
         )
 
@@ -1385,7 +1451,7 @@ async def pre_checkout_handler(
         return
 
     # --------------------------------------------------------
-    # Проверяем цену
+    # PRICE
     # --------------------------------------------------------
 
     expected_price = get_plan_price(
@@ -1393,7 +1459,10 @@ async def pre_checkout_handler(
         plan_key,
     )
 
-    if query.total_amount != expected_price:
+    if (
+        query.total_amount
+        != expected_price
+    ):
 
         logger.error(
             "PRE_CHECKOUT WRONG PRICE | "
@@ -1413,7 +1482,7 @@ async def pre_checkout_handler(
         return
 
     # ========================================================
-    # РАЗРЕШАЕМ ОПЛАТУ
+    # ОДОБРЯЕМ ПЛАТЁЖ
     # ========================================================
 
     await query.answer(
@@ -1430,7 +1499,7 @@ async def pre_checkout_handler(
 
 
 # ============================================================
-# SUCCESSFUL PAYMENT
+# УСПЕШНАЯ ОПЛАТА
 # ============================================================
 
 @dp.message(F.successful_payment)
@@ -1450,7 +1519,9 @@ async def successful_payment_handler(
         "========================================"
     )
 
-    payment = message.successful_payment
+    payment = (
+        message.successful_payment
+    )
 
     if payment is None:
 
@@ -1472,6 +1543,10 @@ async def successful_payment_handler(
         payment.telegram_payment_charge_id
     )
 
+    # ========================================================
+    # ФАКТИЧЕСКИ ОПЛАЧЕННАЯ СУММА
+    # ========================================================
+
     stars_paid = (
         payment.total_amount
     )
@@ -1486,7 +1561,7 @@ async def successful_payment_handler(
     )
 
     # --------------------------------------------------------
-    # Payload
+    # PAYLOAD
     # --------------------------------------------------------
 
     if not payload.startswith(
@@ -1511,6 +1586,10 @@ async def successful_payment_handler(
 
     plan_key = parts[1]
 
+    # --------------------------------------------------------
+    # USER ID
+    # --------------------------------------------------------
+
     try:
 
         payload_user_id = int(
@@ -1525,10 +1604,6 @@ async def successful_payment_handler(
 
         return
 
-    # --------------------------------------------------------
-    # User
-    # --------------------------------------------------------
-
     if payload_user_id != user_id:
 
         logger.error(
@@ -1538,7 +1613,7 @@ async def successful_payment_handler(
         return
 
     # --------------------------------------------------------
-    # Plan
+    # PLAN
     # --------------------------------------------------------
 
     if plan_key not in PLANS:
@@ -1559,7 +1634,7 @@ async def successful_payment_handler(
     )
 
     # ========================================================
-    # АКТИВАЦИЯ
+    # АКТИВАЦИЯ PREMIUM
     # ========================================================
 
     try:
@@ -1569,7 +1644,7 @@ async def successful_payment_handler(
             cursor = db.cursor()
 
             # ------------------------------------------------
-            # Проверяем, не обработан ли платёж
+            # ПРОВЕРЯЕМ ПОВТОРНЫЙ ПЛАТЁЖ
             # ------------------------------------------------
 
             cursor.execute(
@@ -1594,7 +1669,7 @@ async def successful_payment_handler(
                 return
 
             # ------------------------------------------------
-            # Пользователь
+            # USER
             # ------------------------------------------------
 
             cursor.execute(
@@ -1622,9 +1697,9 @@ async def successful_payment_handler(
 
             current_time = now_ts()
 
-            # ------------------------------------------------
-            # Если Premium forever
-            # ------------------------------------------------
+            # =================================================
+            # PREMIUM FOREVER
+            # =================================================
 
             if user["premium_forever"]:
 
@@ -1653,9 +1728,9 @@ async def successful_payment_handler(
                     "♾ Навсегда"
                 )
 
-            # ------------------------------------------------
-            # Обычная подписка
-            # ------------------------------------------------
+            # =================================================
+            # ОБЫЧНАЯ ПОДПИСКА
+            # =================================================
 
             else:
 
@@ -1704,9 +1779,9 @@ async def successful_payment_handler(
                     )
                 )
 
-            # ------------------------------------------------
-            # Сохраняем платёж
-            # ------------------------------------------------
+            # =================================================
+            # СОХРАНЯЕМ ПЛАТЁЖ
+            # =================================================
 
             cursor.execute(
                 """
@@ -1760,12 +1835,13 @@ async def successful_payment_handler(
             )
 
         except Exception:
+
             pass
 
         return
 
     # ========================================================
-    # ПОДТВЕРЖДЕНИЕ
+    # ПОДТВЕРЖДЕНИЕ ПОЛЬЗОВАТЕЛЮ
     # ========================================================
 
     try:
@@ -1826,6 +1902,10 @@ async def show_profile(
     if not user:
         return
 
+    # ========================================================
+    # PREMIUM FOREVER
+    # ========================================================
+
     if user["premium_forever"]:
 
         premium_status = (
@@ -1835,6 +1915,10 @@ async def show_profile(
         remaining = "∞"
 
         expires = "Никогда"
+
+    # ========================================================
+    # ACTIVE PREMIUM
+    # ========================================================
 
     elif (
         user["premium_until"]
@@ -1853,6 +1937,10 @@ async def show_profile(
         expires = format_datetime(
             user["premium_until"]
         )
+
+    # ========================================================
+    # NO PREMIUM
+    # ========================================================
 
     else:
 
@@ -1930,7 +2018,7 @@ async def profile_command(
 
 
 # ============================================================
-# PROMO
+# PROMO BUTTON
 # ============================================================
 
 @dp.message(F.text == "🎟 Промокод")
@@ -1951,6 +2039,10 @@ async def promo_button(
         reply_markup=main_keyboard(),
     )
 
+
+# ============================================================
+# PROMO PROCESS
+# ============================================================
 
 @dp.message(PromoStates.waiting_code)
 async def process_promo(
@@ -2113,6 +2205,7 @@ async def save_business_message(
 
     owner_id = connection["user_chat_id"]
 
+    # Не сохраняем сообщения владельца
     if (
         message.from_user
         and
@@ -2543,9 +2636,9 @@ async def deleted_business_messages_handler(
                 f" (@{record['username']})"
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # PHOTO
-        # ----------------------------------------------------
+        # ====================================================
 
         if record["photo_file_id"]:
 
@@ -2582,9 +2675,9 @@ async def deleted_business_messages_handler(
 
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # TEXT
-        # ----------------------------------------------------
+        # ====================================================
 
         message_text = (
             record["text"]
@@ -2700,7 +2793,7 @@ async def main():
     )
 
     logger.info(
-        "Stars payment system enabled"
+        "Stars payment system ENABLED"
     )
 
     logger.info(

@@ -24,7 +24,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # CONFIG
 # =========================================================
 
-BOT_TOKEN = ""
+BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
 
 DB_NAME = "business_monitor.db"
 

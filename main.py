@@ -30,11 +30,9 @@ from aiogram.utils.keyboard import (
 # НАСТРОЙКИ
 # ============================================================
 
-BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
+BOT_TOKEN = ""
 
 DB_PATH = "business_monitor.db"
-
-BOT_USERNAME = "SpyNeScamBot"
 
 
 # ============================================================
@@ -147,11 +145,12 @@ def now_ts() -> int:
 
 
 def init_db():
+
     cursor = db.cursor()
 
-    # --------------------------------------------------------
+    # ========================================================
     # BUSINESS CONNECTIONS
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute(
         """
@@ -166,9 +165,9 @@ def init_db():
         """
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # MESSAGES
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute(
         """
@@ -199,9 +198,9 @@ def init_db():
         """
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # USERS
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute(
         """
@@ -225,9 +224,9 @@ def init_db():
         """
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PAYMENTS
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute(
         """
@@ -247,9 +246,9 @@ def init_db():
         """
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PROMO USES
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute(
         """
@@ -268,9 +267,9 @@ def init_db():
 
     db.commit()
 
-    # --------------------------------------------------------
-    # Проверка старой структуры promo_uses
-    # --------------------------------------------------------
+    # ========================================================
+    # МИГРАЦИЯ СТАРОЙ promo_uses
+    # ========================================================
 
     cursor.execute(
         """
@@ -284,6 +283,7 @@ def init_db():
     table_info = cursor.fetchone()
 
     if table_info and table_info["sql"]:
+
         sql = table_info["sql"].upper()
 
         old_unique = (
@@ -347,9 +347,9 @@ def init_db():
 
             db.commit()
 
-    # --------------------------------------------------------
+    # ========================================================
     # INDEXES
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute(
         """
@@ -692,9 +692,7 @@ def get_plan_price(
         price = max(
             1,
             int(
-                price
-                * (100 - DISCOUNT_PERCENT)
-                / 100
+                price * 0.90
             ),
         )
 
@@ -726,7 +724,7 @@ async def use_promo(
         try:
 
             # ------------------------------------------------
-            # Этот пользователь уже использовал ЭТОТ код?
+            # Этот пользователь уже использовал этот код?
             # ------------------------------------------------
 
             cursor.execute(
@@ -764,7 +762,9 @@ async def use_promo(
                     FROM promo_uses
                     WHERE promo_code = ?
                     """,
-                    (PROMO_N1,),
+                    (
+                        PROMO_N1,
+                    ),
                 )
 
                 used = int(
@@ -804,7 +804,9 @@ async def use_promo(
                     FROM users
                     WHERE user_id = ?
                     """,
-                    (user_id,),
+                    (
+                        user_id,
+                    ),
                 )
 
                 user = cursor.fetchone()
@@ -845,9 +847,7 @@ async def use_promo(
 
                 db.commit()
 
-                activation_number = (
-                    used + 1
-                )
+                activation_number = used + 1
 
                 return (
                     True,
@@ -939,8 +939,7 @@ async def use_promo(
                     discounted = max(
                         1,
                         int(
-                            plan["stars"]
-                            * 0.9
+                            plan["stars"] * 0.90
                         ),
                     )
 
@@ -959,10 +958,6 @@ async def use_promo(
                     ),
                 )
 
-            # =================================================
-            # UNKNOWN
-            # =================================================
-
             db.rollback()
 
             return (
@@ -971,7 +966,9 @@ async def use_promo(
             )
 
         except Exception:
+
             db.rollback()
+
             raise
 
 
@@ -980,23 +977,19 @@ async def use_promo(
 # ============================================================
 
 START_TEXT = """
-<b>🐻‍❄️ SpyNeScamBot</b>
-
-Получайте уведомления о действиях в подключённых чатах.
-
 <b>🔗 Подключение</b>
 
-1. Нажмите <b>«⚙️ Открыть настройки»</b>.
-2. Откройте свой профиль.
-3. Нажмите <b>«Изменить»</b>.
-4. Выберите <b>«Автоматизация чатов»</b>.
-5. Найдите <code>@SpyNeScamBot</code>.
-6. Выберите бота и нажмите <b>«Добавить»</b>.
+1️⃣ Откройте настройки Telegram.
 
-✅ Готово!
+2️⃣ Откройте свой профиль → <b>Изменить</b>.
 
-<b>Путь:</b>
-Профиль → Изменить → Автоматизация чатов → @SpyNeScamBot
+3️⃣ Нажмите <b>«Автоматизация чатов»</b>.
+
+4️⃣ Найдите <code>@SpyNeScamBot</code>.
+
+5️⃣ Выберите бота и нажмите <b>«Добавить»</b>.
+
+✅ После этого подключение готово.
 """
 
 
@@ -1011,24 +1004,17 @@ async def cmd_start(
         message.from_user.first_name,
     )
 
-    # --------------------------------------------------------
-    # Короткое красивое первое сообщение
-    # --------------------------------------------------------
-
+    # Маленькое первое сообщение
     await message.answer(
         (
             "🐻‍❄️ <b>SpyNeScamBot</b>\n\n"
             "Добро пожаловать! 👋\n"
-            "Подключите бота к Telegram, "
-            "чтобы начать работу."
+            "Подключите бота к Telegram."
         ),
         reply_markup=main_keyboard(),
     )
 
-    # --------------------------------------------------------
-    # Отдельная компактная инструкция
-    # --------------------------------------------------------
-
+    # Компактная инструкция
     await message.answer(
         START_TEXT,
         reply_markup=connect_keyboard(),
@@ -1135,7 +1121,7 @@ async def premium_callback(
 
 
 # ============================================================
-# BUY PLAN
+# ⭐ ПРЯМАЯ ОПЛАТА
 # ============================================================
 
 @dp.callback_query(F.data.startswith("buy:"))
@@ -1151,6 +1137,13 @@ async def buy_plan(
         ":",
         1,
     )[1]
+
+    logger.info(
+        "BUY BUTTON CLICKED | "
+        "user=%s | plan=%s",
+        user_id,
+        plan_key,
+    )
 
     if plan_key not in PLANS:
 
@@ -1174,6 +1167,17 @@ async def buy_plan(
         plan_key,
     )
 
+    # --------------------------------------------------------
+    # Очень важно:
+    # сразу подтверждаем нажатие кнопки.
+    # --------------------------------------------------------
+
+    await callback.answer()
+
+    # --------------------------------------------------------
+    # Уникальный payload
+    # --------------------------------------------------------
+
     payload = (
         f"premium:"
         f"{plan_key}:"
@@ -1182,24 +1186,23 @@ async def buy_plan(
     )
 
     logger.info(
-        "PAYMENT STEP 1 | invoice | "
-        "user=%s | plan=%s | price=%s",
+        "CREATING STARS INVOICE | "
+        "user=%s | plan=%s | price=%s | payload=%s",
         user_id,
         plan_key,
         price,
+        payload,
     )
 
     try:
 
         # ====================================================
-        # TELEGRAM STARS
+        # СТАРАЯ РАБОЧАЯ СХЕМА
         # ====================================================
 
-        await bot.send_invoice(
-            chat_id=user_id,
-
+        await callback.message.answer_invoice(
             title=(
-                f"⭐ Premium — "
+                f"Premium — "
                 f"{plan['name']}"
             ),
 
@@ -1229,27 +1232,35 @@ async def buy_plan(
         )
 
         logger.info(
-            "PAYMENT STEP 1 OK | "
-            "invoice sent | user=%s",
+            "STARS INVOICE SENT | "
+            "user=%s | plan=%s",
             user_id,
+            plan_key,
         )
-
-        await callback.answer()
 
     except Exception as e:
 
         logger.exception(
-            "PAYMENT STEP 1 ERROR | send_invoice"
+            "STARS INVOICE ERROR"
         )
 
-        await callback.answer(
-            "❌ Не удалось создать оплату.",
-            show_alert=True,
-        )
+        try:
+
+            await callback.message.answer(
+                (
+                    "❌ <b>Не удалось создать оплату.</b>\n\n"
+                    "Попробуйте выбрать тариф ещё раз."
+                ),
+                reply_markup=main_keyboard(),
+            )
+
+        except Exception:
+
+            pass
 
 
 # ============================================================
-# PRE CHECKOUT
+# PRE-CHECKOUT
 # ============================================================
 
 @dp.pre_checkout_query()
@@ -1258,7 +1269,7 @@ async def pre_checkout_handler(
 ):
 
     logger.info(
-        "PAYMENT STEP 2 | PRE_CHECKOUT | "
+        "PRE_CHECKOUT RECEIVED | "
         "user=%s | payload=%s | amount=%s | currency=%s",
         query.from_user.id,
         query.invoice_payload,
@@ -1277,7 +1288,7 @@ async def pre_checkout_handler(
     ):
 
         logger.error(
-            "PRE_CHECKOUT ERROR | bad payload"
+            "PRE_CHECKOUT BAD PAYLOAD"
         )
 
         await query.answer(
@@ -1292,7 +1303,7 @@ async def pre_checkout_handler(
     if len(parts) != 4:
 
         logger.error(
-            "PRE_CHECKOUT ERROR | bad payload format"
+            "PRE_CHECKOUT BAD PAYLOAD FORMAT"
         )
 
         await query.answer(
@@ -1312,10 +1323,6 @@ async def pre_checkout_handler(
 
     except ValueError:
 
-        logger.error(
-            "PRE_CHECKOUT ERROR | bad user id"
-        )
-
         await query.answer(
             ok=False,
             error_message="Неверный пользователь.",
@@ -1333,10 +1340,7 @@ async def pre_checkout_handler(
     ):
 
         logger.error(
-            "PRE_CHECKOUT ERROR | "
-            "wrong user | payload=%s actual=%s",
-            payload_user_id,
-            query.from_user.id,
+            "PRE_CHECKOUT WRONG USER"
         )
 
         await query.answer(
@@ -1350,7 +1354,7 @@ async def pre_checkout_handler(
         return
 
     # --------------------------------------------------------
-    # Проверяем план
+    # Проверяем тариф
     # --------------------------------------------------------
 
     if plan_key not in PLANS:
@@ -1363,14 +1367,13 @@ async def pre_checkout_handler(
         return
 
     # --------------------------------------------------------
-    # Проверяем Stars
+    # Проверяем валюту
     # --------------------------------------------------------
 
     if query.currency != "XTR":
 
         logger.error(
-            "PRE_CHECKOUT ERROR | "
-            "wrong currency=%s",
+            "PRE_CHECKOUT WRONG CURRENCY: %s",
             query.currency,
         )
 
@@ -1390,14 +1393,11 @@ async def pre_checkout_handler(
         plan_key,
     )
 
-    if (
-        query.total_amount
-        != expected_price
-    ):
+    if query.total_amount != expected_price:
 
         logger.error(
-            "PRE_CHECKOUT ERROR | "
-            "wrong price | expected=%s actual=%s",
+            "PRE_CHECKOUT WRONG PRICE | "
+            "expected=%s | received=%s",
             expected_price,
             query.total_amount,
         )
@@ -1413,7 +1413,7 @@ async def pre_checkout_handler(
         return
 
     # ========================================================
-    # ОБЯЗАТЕЛЬНО РАЗРЕШАЕМ ОПЛАТУ
+    # РАЗРЕШАЕМ ОПЛАТУ
     # ========================================================
 
     await query.answer(
@@ -1421,11 +1421,11 @@ async def pre_checkout_handler(
     )
 
     logger.info(
-        "PAYMENT STEP 2 OK | "
         "PRE_CHECKOUT APPROVED | "
-        "user=%s | plan=%s",
+        "user=%s | plan=%s | amount=%s",
         query.from_user.id,
         plan_key,
+        query.total_amount,
     )
 
 
@@ -1439,7 +1439,15 @@ async def successful_payment_handler(
 ):
 
     logger.info(
-        "PAYMENT STEP 3 | SUCCESSFUL_PAYMENT RECEIVED"
+        "========================================"
+    )
+
+    logger.info(
+        "SUCCESSFUL PAYMENT RECEIVED"
+    )
+
+    logger.info(
+        "========================================"
     )
 
     payment = message.successful_payment
@@ -1447,12 +1455,18 @@ async def successful_payment_handler(
     if payment is None:
 
         logger.error(
-            "SUCCESSFUL_PAYMENT ERROR | payment=None"
+            "successful_payment is None"
         )
 
         return
 
-    payload = payment.invoice_payload
+    user_id = (
+        message.from_user.id
+    )
+
+    payload = (
+        payment.invoice_payload
+    )
 
     charge_id = (
         payment.telegram_payment_charge_id
@@ -1462,12 +1476,8 @@ async def successful_payment_handler(
         payment.total_amount
     )
 
-    user_id = (
-        message.from_user.id
-    )
-
     logger.info(
-        "PAYMENT SUCCESS DATA | "
+        "PAYMENT DATA | "
         "user=%s | payload=%s | stars=%s | charge=%s",
         user_id,
         payload,
@@ -1476,7 +1486,7 @@ async def successful_payment_handler(
     )
 
     # --------------------------------------------------------
-    # Проверяем payload
+    # Payload
     # --------------------------------------------------------
 
     if not payload.startswith(
@@ -1484,8 +1494,7 @@ async def successful_payment_handler(
     ):
 
         logger.error(
-            "SUCCESS PAYMENT ERROR | "
-            "invalid payload"
+            "PAYMENT INVALID PAYLOAD"
         )
 
         return
@@ -1495,8 +1504,7 @@ async def successful_payment_handler(
     if len(parts) != 4:
 
         logger.error(
-            "SUCCESS PAYMENT ERROR | "
-            "invalid payload parts"
+            "PAYMENT INVALID PAYLOAD FORMAT"
         )
 
         return
@@ -1512,34 +1520,31 @@ async def successful_payment_handler(
     except ValueError:
 
         logger.error(
-            "SUCCESS PAYMENT ERROR | "
-            "invalid user id"
+            "PAYMENT INVALID USER ID"
         )
 
         return
 
     # --------------------------------------------------------
-    # Проверка пользователя
+    # User
     # --------------------------------------------------------
 
     if payload_user_id != user_id:
 
         logger.error(
-            "SUCCESS PAYMENT ERROR | "
-            "wrong user"
+            "PAYMENT USER MISMATCH"
         )
 
         return
 
     # --------------------------------------------------------
-    # Проверка тарифа
+    # Plan
     # --------------------------------------------------------
 
     if plan_key not in PLANS:
 
         logger.error(
-            "SUCCESS PAYMENT ERROR | "
-            "unknown plan=%s",
+            "PAYMENT UNKNOWN PLAN: %s",
             plan_key,
         )
 
@@ -1554,7 +1559,7 @@ async def successful_payment_handler(
     )
 
     # ========================================================
-    # СОХРАНЕНИЕ И АКТИВАЦИЯ
+    # АКТИВАЦИЯ
     # ========================================================
 
     try:
@@ -1564,7 +1569,7 @@ async def successful_payment_handler(
             cursor = db.cursor()
 
             # ------------------------------------------------
-            # Защита от повторного платежа
+            # Проверяем, не обработан ли платёж
             # ------------------------------------------------
 
             cursor.execute(
@@ -1579,22 +1584,17 @@ async def successful_payment_handler(
                 ),
             )
 
-            already_processed = (
-                cursor.fetchone()
-            )
-
-            if already_processed:
+            if cursor.fetchone():
 
                 logger.warning(
-                    "PAYMENT ALREADY PROCESSED | "
-                    "charge=%s",
+                    "PAYMENT ALREADY PROCESSED | %s",
                     charge_id,
                 )
 
                 return
 
             # ------------------------------------------------
-            # Получаем пользователя
+            # Пользователь
             # ------------------------------------------------
 
             cursor.execute(
@@ -1615,9 +1615,7 @@ async def successful_payment_handler(
             if not user:
 
                 logger.error(
-                    "PAYMENT ERROR | "
-                    "user not found=%s",
-                    user_id,
+                    "PAYMENT USER NOT FOUND"
                 )
 
                 return
@@ -1625,7 +1623,7 @@ async def successful_payment_handler(
             current_time = now_ts()
 
             # ------------------------------------------------
-            # Premium навсегда
+            # Если Premium forever
             # ------------------------------------------------
 
             if user["premium_forever"]:
@@ -1651,6 +1649,10 @@ async def successful_payment_handler(
                     ),
                 )
 
+                expiration_text = (
+                    "♾ Навсегда"
+                )
+
             # ------------------------------------------------
             # Обычная подписка
             # ------------------------------------------------
@@ -1670,14 +1672,6 @@ async def successful_payment_handler(
                 new_until = (
                     base_time
                     + plan["days"] * 86400
-                )
-
-                logger.info(
-                    "ACTIVATE PREMIUM | "
-                    "user=%s | old_until=%s | new_until=%s",
-                    user_id,
-                    old_until,
-                    new_until,
                 )
 
                 cursor.execute(
@@ -1702,6 +1696,12 @@ async def successful_payment_handler(
                         current_time,
                         user_id,
                     ),
+                )
+
+                expiration_text = (
+                    format_datetime(
+                        new_until
+                    )
                 )
 
             # ------------------------------------------------
@@ -1733,29 +1733,26 @@ async def successful_payment_handler(
             db.commit()
 
         logger.info(
-            "PAYMENT STEP 3 OK | "
-            "DATABASE UPDATED | user=%s",
+            "PREMIUM ACTIVATED | "
+            "user=%s | plan=%s | stars=%s",
             user_id,
+            plan_key,
+            stars_paid,
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "PAYMENT STEP 3 ERROR | "
-            "DATABASE / PREMIUM ACTIVATION"
+            "PAYMENT DATABASE ERROR"
         )
-
-        # Даже если база дала ошибку,
-        # лог будет содержать точную причину.
 
         try:
 
-            await bot.send_message(
-                chat_id=user_id,
-                text=(
-                    "⚠️ <b>Оплата получена</b>\n\n"
-                    "Платёж прошёл, но произошла "
-                    "ошибка при активации Premium.\n\n"
+            await message.answer(
+                (
+                    "⚠️ <b>Платёж получен</b>\n\n"
+                    "Произошла ошибка при "
+                    "активации Premium.\n\n"
                     "ID платежа:\n"
                     f"<code>{escape_text(charge_id)}</code>"
                 ),
@@ -1768,64 +1765,39 @@ async def successful_payment_handler(
         return
 
     # ========================================================
-    # АКТУАЛЬНЫЙ СТАТУС
+    # ПОДТВЕРЖДЕНИЕ
     # ========================================================
-
-    updated_user = get_user(
-        user_id
-    )
-
-    if updated_user is None:
-
-        expiration_text = "—"
-
-    elif updated_user["premium_forever"]:
-
-        expiration_text = "♾ Навсегда"
-
-    else:
-
-        expiration_text = format_datetime(
-            updated_user["premium_until"]
-        )
-
-    # ========================================================
-    # СООБЩЕНИЕ ПОСЛЕ ОПЛАТЫ
-    # ========================================================
-
-    confirmation_text = (
-        "✅ <b>Оплата прошла успешно!</b>\n\n"
-
-        f"⭐ Premium: "
-        f"<b>{plan['name']}</b>\n"
-
-        f"💰 Оплачено: "
-        f"<b>{stars_paid} Stars</b>\n\n"
-
-        "🎉 <b>Premium активирован!</b>\n\n"
-
-        f"📅 Действует до: "
-        f"<b>{expiration_text}</b>"
-    )
 
     try:
 
         await message.answer(
-            confirmation_text,
+            (
+                "✅ <b>Оплата прошла успешно!</b>\n\n"
+
+                f"⭐ Premium: "
+                f"<b>{plan['name']}</b>\n"
+
+                f"💰 Оплачено: "
+                f"<b>{stars_paid} Stars</b>\n\n"
+
+                "🎉 <b>Premium активирован!</b>\n\n"
+
+                f"📅 Действует до: "
+                f"<b>{expiration_text}</b>"
+            ),
             reply_markup=main_keyboard(),
         )
 
         logger.info(
-            "PAYMENT STEP 4 OK | "
-            "confirmation sent | user=%s",
+            "PAYMENT CONFIRMATION SENT | "
+            "user=%s",
             user_id,
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "PAYMENT STEP 4 ERROR | "
-            "confirmation message",
+            "PAYMENT CONFIRMATION ERROR"
         )
 
 
@@ -1958,7 +1930,7 @@ async def profile_command(
 
 
 # ============================================================
-# PROMO BUTTON
+# PROMO
 # ============================================================
 
 @dp.message(F.text == "🎟 Промокод")
@@ -1979,10 +1951,6 @@ async def promo_button(
         reply_markup=main_keyboard(),
     )
 
-
-# ============================================================
-# PROMO PROCESS
-# ============================================================
 
 @dp.message(PromoStates.waiting_code)
 async def process_promo(
@@ -2101,11 +2069,9 @@ async def business_connection_handler(
 
     logger.info(
         "Business connection | "
-        "id=%s | user=%s | enabled=%s | can_reply=%s",
+        "id=%s | user=%s",
         connection.id,
         connection.user.id,
-        connection.is_enabled,
-        connection.can_reply,
     )
 
 
@@ -2145,9 +2111,7 @@ async def save_business_message(
     if not connection:
         return
 
-    owner_id = (
-        connection["user_chat_id"]
-    )
+    owner_id = connection["user_chat_id"]
 
     if (
         message.from_user
@@ -2182,9 +2146,9 @@ async def save_business_message(
 
     caption = message.caption
 
+    user_id = None
     username = None
     first_name = None
-    user_id = None
 
     if message.from_user:
 
@@ -2314,9 +2278,7 @@ async def edited_business_message_handler(
     if not connection:
         return
 
-    owner_id = (
-        connection["user_chat_id"]
-    )
+    owner_id = connection["user_chat_id"]
 
     if (
         message.from_user
@@ -2498,9 +2460,7 @@ async def deleted_business_messages_handler(
     if not connection:
         return
 
-    owner_id = (
-        connection["user_chat_id"]
-    )
+    owner_id = connection["user_chat_id"]
 
     message_ids = list(
         update.message_ids
@@ -2696,30 +2656,28 @@ async def unknown_message(
 
 async def set_commands():
 
-    commands = [
-        BotCommand(
-            command="start",
-            description="Запустить бота",
-        ),
-
-        BotCommand(
-            command="premium",
-            description="Купить Premium",
-        ),
-
-        BotCommand(
-            command="profile",
-            description="Мой профиль",
-        ),
-
-        BotCommand(
-            command="help",
-            description="Помощь",
-        ),
-    ]
-
     await bot.set_my_commands(
-        commands
+        [
+            BotCommand(
+                command="start",
+                description="Запустить бота",
+            ),
+
+            BotCommand(
+                command="premium",
+                description="Купить Premium",
+            ),
+
+            BotCommand(
+                command="profile",
+                description="Мой профиль",
+            ),
+
+            BotCommand(
+                command="help",
+                description="Помощь",
+            ),
+        ]
     )
 
 
@@ -2738,11 +2696,11 @@ async def main():
     )
 
     logger.info(
-        "SpyNeScamBot STARTING"
+        "SpyNeScamBot STARTED"
     )
 
     logger.info(
-        "Premium / Stars / Promo / Business"
+        "Stars payment system enabled"
     )
 
     logger.info(

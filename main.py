@@ -14,7 +14,7 @@ from aiogram.types import Message
 # ============================================================
 
 # ВСТАВЬ СЮДА ТОКЕН БОТА ИЗ BOTFATHER
-BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
+BOT_TOKEN = ""
 
 DATABASE_FILE = "business_monitor.db"
 
@@ -160,7 +160,6 @@ def get_message_text(message: Message):
 def get_sender_info(message: Message):
 
     if not message.from_user:
-
         return (
             None,
             "Неизвестный пользователь",
@@ -578,7 +577,7 @@ def format_sender(
 
 
 # ============================================================
-# /START  (обновлён – добавлена строка про одноразовые фото)
+# /START
 # ============================================================
 
 @dp.message(
@@ -592,7 +591,7 @@ async def start_handler(
 
         "🕵️ <b>Business Message Monitor</b>\n\n"
 
-        "✅ Бот работает.\n\n"
+        "✅ <b>Бот работает.</b>\n\n"
 
         "Подключи меня через:\n"
 
@@ -602,14 +601,27 @@ async def start_handler(
 
         "Я обрабатываю разрешённые личные чаты.\n\n"
 
-        "📷 Новые фотографии\n"
+        "📷 Фотографии сохраняются для обработки "
+        "ответов на них\n"
+
         "🫥 Фото со spoiler\n"
+
         "🗑 Удалённые фотографии\n"
+
         "🗑 Удалённые сообщения\n"
+
         "✏️ Редактирование\n"
-        "🔗 Ответы на сохранённые фото\n"
-        "🔓 <b>Одноразовые (view‑once) фото</b> – "
-        "автоматически присылаются как обычные",
+
+        "🔗 Ответы на сохранённые фотографии\n\n"
+
+        "👁 <b>Одноразовые / временные фото:</b>\n"
+
+        "если Telegram предоставляет боту доступное "
+        "медиа при обработке сообщения или ответа, "
+        "оно будет обработано как обычная фотография.\n\n"
+
+        "⚠️ Обычные новые фотографии напрямую "
+        "в этот чат не пересылаются.",
 
         parse_mode="HTML"
     )
@@ -709,7 +721,7 @@ async def business_connection_handler(
 
 
 # ============================================================
-# NEW BUSINESS MESSAGE  (ИЗМЕНЕН – добавлена обработка view‑once)
+# NEW BUSINESS MESSAGE
 # ============================================================
 
 @dp.business_message()
@@ -743,7 +755,7 @@ async def business_message_handler(
         return
 
     # --------------------------------------------------------
-    # Получаем отправителя
+    # Отправитель
     # --------------------------------------------------------
 
     sender_id = (
@@ -766,13 +778,15 @@ async def business_message_handler(
 
     logger.info(
         "NEW | connection=%s chat=%s message=%s "
-        "sender=%s type=%s",
+        "sender=%s type=%s spoiler=%s reply=%s",
 
         connection_id,
         message.chat.id,
         message.message_id,
         sender_id,
-        get_message_type(message)
+        get_message_type(message),
+        bool(message.has_media_spoiler),
+        bool(message.reply_to_message)
     )
 
     # --------------------------------------------------------
@@ -790,109 +804,21 @@ async def business_message_handler(
         return
 
     # ========================================================
-    # НОВОЕ ФОТО  (с проверкой на одноразовость)
+    # ВАЖНО:
+    #
+    # НОВЫЕ ФОТО НЕ ОТПРАВЛЯЕМ.
+    #
+    # Они только сохраняются в SQLite.
     # ========================================================
 
     if message.photo:
 
-        log_chat_id = await get_log_chat_id(
-            connection_id
+        logger.info(
+            "PHOTO SAVED ONLY | "
+            "message=%s | spoiler=%s",
+            message.message_id,
+            bool(message.has_media_spoiler)
         )
-
-        if not log_chat_id:
-            return
-
-        sender_info = format_sender(
-
-            sender_id,
-
-            message.from_user.full_name
-
-            if message.from_user
-
-            else "Неизвестный пользователь",
-
-            message.from_user.username
-
-            if message.from_user
-
-            else None
-        )
-
-        caption_text = (
-
-            message.caption
-
-            or "Без подписи"
-        )
-
-        # Проверяем, является ли фото одноразовым (view‑once)
-        is_view_once = (
-            hasattr(message, 'has_protected_content') and message.has_protected_content
-        ) or (
-            hasattr(message, 'self_destruct_timer') and message.self_destruct_timer is not None
-        )
-
-        # Определяем заголовок
-        if message.has_media_spoiler:
-            title = "🫥 <b>НОВОЕ ФОТО СО SPOILER</b>"
-        elif is_view_once:
-            title = "🔓 <b>НОВОЕ ОДНОРАЗОВОЕ ФОТО (обход)</b>"
-        else:
-            title = "📷 <b>НОВОЕ ФОТО</b>"
-
-        log_caption = (
-
-            f"{title}\n\n"
-
-            f"👤 <b>Отправитель:</b>\n"
-            f"{sender_info}\n\n"
-
-            f"💬 <b>Чат:</b> "
-            f"<code>{message.chat.id}</code>\n"
-
-            f"🆔 <b>Message ID:</b> "
-            f"<code>{message.message_id}</code>\n\n"
-
-            f"📝 <b>Подпись:</b>\n"
-            f"{escape_text(caption_text)}"
-        )
-
-        try:
-
-            await bot.send_photo(
-
-                chat_id=log_chat_id,
-
-                photo=message.photo[-1].file_id,
-
-                caption=log_caption,
-
-                parse_mode="HTML",
-
-                has_spoiler=False  # всегда показываем как обычное
-            )
-
-            logger.info(
-
-                "PHOTO SENT | "
-                "connection=%s message=%s view_once=%s",
-
-                connection_id,
-                message.message_id,
-                is_view_once
-            )
-
-        except Exception as e:
-
-            logger.exception(
-
-                "Ошибка отправки нового фото: %s",
-
-                e
-            )
-
-        return
 
     # ========================================================
     # REPLY
@@ -902,8 +828,14 @@ async def business_message_handler(
         return
 
     replied_message_id = (
-
         message.reply_to_message.message_id
+    )
+
+    logger.info(
+        "REPLY DETECTED | "
+        "message=%s -> original=%s",
+        message.message_id,
+        replied_message_id
     )
 
     saved = get_saved_message(
@@ -916,10 +848,16 @@ async def business_message_handler(
     )
 
     if not saved:
+
+        logger.info(
+            "REPLY ORIGINAL NOT FOUND | "
+            "message=%s",
+            replied_message_id
+        )
+
         return
 
     (
-
         saved_sender_id,
         saved_sender_name,
         saved_sender_username,
@@ -962,22 +900,20 @@ async def business_message_handler(
         )
 
         caption_text = (
-
             caption
-
             or "Без подписи"
         )
 
         if photo_has_spoiler:
 
             title = (
-                "🫥 <b>СОХРАНЁННОЕ ФОТО СО SPOILER</b>"
+                "🫥 <b>ФОТО СО SPOILER — REPLY</b>"
             )
 
         else:
 
             title = (
-                "📷 <b>СОХРАНЁННОЕ ФОТО</b>"
+                "🔗 <b>ФОТО — REPLY</b>"
             )
 
         log_caption = (
@@ -1015,21 +951,29 @@ async def business_message_handler(
             )
 
             logger.info(
-
                 "REPLY PHOTO SENT | "
                 "original=%s",
-
                 replied_message_id
             )
 
         except Exception as e:
 
             logger.exception(
-
                 "Ошибка отправки фото по reply: %s",
-
                 e
             )
+
+        return
+
+    # ========================================================
+    # REPLY НА НЕ-ФОТО
+    # ========================================================
+
+    logger.info(
+        "REPLY ORIGINAL TYPE=%s | "
+        "photo unavailable",
+        message_type
+    )
 
 
 # ============================================================
@@ -1116,7 +1060,7 @@ async def edited_business_message_handler(
         )
 
     # --------------------------------------------------------
-    # Изменения владельца не логируем
+    # Сообщения владельца не логируем
     # --------------------------------------------------------
 
     if (
@@ -1133,9 +1077,7 @@ async def edited_business_message_handler(
         )
 
         logger.info(
-
             "EDIT IGNORED: owner message=%s",
-
             message.message_id
         )
 
@@ -1216,10 +1158,8 @@ async def edited_business_message_handler(
         )
 
         logger.info(
-
             "EDIT LOG | "
             "connection=%s message=%s",
-
             connection_id,
             message.message_id
         )
@@ -1315,16 +1255,13 @@ async def deleted_business_messages_handler(
             except Exception as e:
 
                 logger.exception(
-
                     "Ошибка unknown delete log: %s",
-
                     e
                 )
 
             continue
 
         (
-
             sender_id,
             sender_name,
             sender_username,
@@ -1353,9 +1290,7 @@ async def deleted_business_messages_handler(
         ):
 
             logger.info(
-
                 "DELETE IGNORED: owner message=%s",
-
                 message_id
             )
 
@@ -1381,9 +1316,7 @@ async def deleted_business_messages_handler(
         ):
 
             caption_text = (
-
                 caption
-
                 or "Без подписи"
             )
 
@@ -1432,10 +1365,8 @@ async def deleted_business_messages_handler(
                 )
 
                 logger.info(
-
                     "DELETED PHOTO SENT | "
                     "connection=%s message=%s",
-
                     connection_id,
                     message_id
                 )
@@ -1443,9 +1374,7 @@ async def deleted_business_messages_handler(
             except Exception as e:
 
                 logger.exception(
-
                     "Ошибка отправки удалённого фото: %s",
-
                     e
                 )
 
@@ -1460,7 +1389,6 @@ async def deleted_business_messages_handler(
             message_text = (
 
                 f"[{message_type}] "
-
                 "сообщение без текста"
             )
 
@@ -1499,10 +1427,8 @@ async def deleted_business_messages_handler(
             )
 
             logger.info(
-
                 "DELETE LOG | "
                 "connection=%s message=%s",
-
                 connection_id,
                 message_id
             )
@@ -1510,9 +1436,7 @@ async def deleted_business_messages_handler(
         except Exception as e:
 
             logger.exception(
-
                 "Ошибка delete log: %s",
-
                 e
             )
 
@@ -1522,6 +1446,13 @@ async def deleted_business_messages_handler(
 # ============================================================
 
 async def main():
+
+    if not BOT_TOKEN:
+
+        raise RuntimeError(
+            "BOT_TOKEN не указан! "
+            "Вставь токен бота в переменную BOT_TOKEN."
+        )
 
     logger.info(
         "=========================================="
@@ -1540,11 +1471,15 @@ async def main():
     )
 
     logger.info(
-        "PHOTO MONITOR ENABLED"
+        "ORDINARY NEW PHOTOS: NOT SENT"
     )
 
     logger.info(
-        "DELETE PHOTO MONITOR ENABLED"
+        "REPLY PHOTO HANDLER: ENABLED"
+    )
+
+    logger.info(
+        "DELETE PHOTO MONITOR: ENABLED"
     )
 
     logger.info(

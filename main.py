@@ -1,11 +1,9 @@
 import asyncio
-import json
 import math
-import os
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from aiogram import Bot, Dispatcher, F
@@ -27,14 +25,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 # ============================================================
-# CONFIG
+# НАСТРОЙКИ
 # ============================================================
 
-BOT_TOKEN = "8893376358:AAHVWJwm8GLJjqz_BWZiFV3CAsquDGsf44c"
+BOT_TOKEN = ""
 
-# Telegram ID пользователей, которым разрешена админ-панель
+# Telegram ID администраторов
 ADMIN_IDS = {
-    5018476227,
+    123456789,
     # 987654321,
 }
 
@@ -74,7 +72,7 @@ PLANS = {
 }
 
 
-# Старые встроенные промокоды сохраняются
+# Старые системные промокоды
 LEGACY_PROMOS = {
     "N1": {
         "type": "free",
@@ -115,7 +113,7 @@ dp = Dispatcher()
 
 
 # ============================================================
-# LOCKS
+# LOCK
 # ============================================================
 
 db_lock = asyncio.Lock()
@@ -137,7 +135,6 @@ class AdminStates(StatesGroup):
     waiting_user_id = State()
     waiting_duration = State()
     waiting_remove_user_id = State()
-    waiting_remove_confirm = State()
 
 
 class AdminSearchStates(StatesGroup):
@@ -188,8 +185,10 @@ def format_duration(seconds: int) -> str:
 
     if days:
         parts.append(f"{days} д.")
+
     if hours:
         parts.append(f"{hours} ч.")
+
     if minutes:
         parts.append(f"{minutes} мин.")
 
@@ -210,9 +209,9 @@ def is_admin(user_id: int) -> bool:
 def init_db():
     cur = db.cursor()
 
-    # --------------------------------------------------------
-    # Business connections
-    # --------------------------------------------------------
+    # ========================================================
+    # BUSINESS CONNECTIONS
+    # ========================================================
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS business_connections (
@@ -225,9 +224,9 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # Messages
-    # --------------------------------------------------------
+    # ========================================================
+    # MESSAGES
+    # ========================================================
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS messages (
@@ -254,9 +253,9 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # Users
-    # --------------------------------------------------------
+    # ========================================================
+    # USERS
+    # ========================================================
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -273,9 +272,9 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # Payments
-    # --------------------------------------------------------
+    # ========================================================
+    # PAYMENTS
+    # ========================================================
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS payments (
@@ -289,9 +288,9 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # Promo codes
-    # --------------------------------------------------------
+    # ========================================================
+    # CUSTOM PROMO CODES
+    # ========================================================
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS promo_codes (
@@ -307,9 +306,11 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # Promo uses
-    # --------------------------------------------------------
+    # ========================================================
+    # PROMO USES
+    # Один пользователь может использовать разные промокоды,
+    # но один и тот же код повторно использовать нельзя.
+    # ========================================================
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS promo_uses (
@@ -321,9 +322,9 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # Admin actions
-    # --------------------------------------------------------
+    # ========================================================
+    # ADMIN ACTIONS
+    # ========================================================
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS admin_actions (
@@ -336,13 +337,6 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # Legacy promo migration
-    # --------------------------------------------------------
-
-    # Если раньше promo_codes не было, встроенные промокоды
-    # всё равно работают через LEGACY_PROMOS.
-
     db.commit()
 
 
@@ -350,7 +344,7 @@ init_db()
 
 
 # ============================================================
-# USER HELPERS
+# USER
 # ============================================================
 
 def ensure_user(
@@ -390,7 +384,9 @@ def get_user(user_id: int):
         SELECT *
         FROM users
         WHERE user_id = ?
-    """, (user_id,)).fetchone()
+    """, (
+        user_id,
+    )).fetchone()
 
 
 def get_premium_active(user_id: int) -> bool:
@@ -402,12 +398,10 @@ def get_premium_active(user_id: int) -> bool:
     if user["premium_forever"]:
         return True
 
-    premium_until = user["premium_until"]
-
-    if not premium_until:
+    if not user["premium_until"]:
         return False
 
-    return premium_until > now_ts()
+    return user["premium_until"] > now_ts()
 
 
 def premium_remaining(user_id: int) -> int:
@@ -428,6 +422,10 @@ def premium_remaining(user_id: int) -> int:
     )
 
 
+# ============================================================
+# DISCOUNT
+# ============================================================
+
 def has_discount(user_id: int) -> bool:
     row = db.execute("""
         SELECT id
@@ -444,16 +442,16 @@ def has_discount(user_id: int) -> bool:
         return True
 
     row = db.execute("""
-        SELECT id
-        FROM promo_uses
-        WHERE user_id = ?
-          AND promo_code IN (
-              SELECT code
-              FROM promo_codes
-              WHERE promo_type = 'discount'
-          )
+        SELECT pu.id
+        FROM promo_uses pu
+        JOIN promo_codes pc
+            ON pc.code = pu.promo_code
+        WHERE pu.user_id = ?
+          AND pc.promo_type = 'discount'
         LIMIT 1
-    """, (user_id,)).fetchone()
+    """, (
+        user_id,
+    )).fetchone()
 
     return bool(row)
 
@@ -491,12 +489,16 @@ def activate_premium_days(
         return
 
     current = user["premium_until"] or 0
+
     current = max(
         current,
         now_ts()
     )
 
-    new_until = current + days * 86400
+    new_until = (
+        current
+        + days * 86400
+    )
 
     db.execute("""
         UPDATE users
@@ -525,12 +527,16 @@ def activate_premium_hours(
         return
 
     current = user["premium_until"] or 0
+
     current = max(
         current,
         now_ts()
     )
 
-    new_until = current + hours * 3600
+    new_until = (
+        current
+        + hours * 3600
+    )
 
     db.execute("""
         UPDATE users
@@ -591,13 +597,13 @@ def bottom_menu() -> ReplyKeyboardMarkup:
                 ),
                 KeyboardButton(
                     text="👤 Профиль"
-                ),
+                )
             ],
             [
                 KeyboardButton(
                     text="🔗 Подключение"
                 )
-            ],
+            ]
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -606,8 +612,20 @@ def bottom_menu() -> ReplyKeyboardMarkup:
 
 
 # ============================================================
-# START / MAIN UI
+# MAIN MENU
 # ============================================================
+
+START_TEXT = """
+<b>🐻‍❄️ SPY</b>
+
+Минималистичный мониторинг ваших чатов.
+
+Подключите бота через Telegram Business,
+и он будет работать автоматически.
+
+<b>Статус:</b> 🟢 готов
+"""
+
 
 def main_inline_keyboard():
     builder = InlineKeyboardBuilder()
@@ -631,18 +649,6 @@ def main_inline_keyboard():
     )
 
     return builder.as_markup()
-
-
-START_TEXT = """
-<b>🐻‍❄️ SPY</b>
-
-Минималистичный мониторинг ваших чатов.
-
-Подключите бота через Telegram Business,
-и он будет работать автоматически.
-
-<b>Статус:</b> 🟢 готов
-"""
 
 
 @dp.message(CommandStart())
@@ -675,11 +681,13 @@ def profile_text(user_id: int) -> str:
         return "Профиль не найден."
 
     if user["premium_forever"]:
+
         status = "🟢 Активен"
         remaining = "Навсегда"
         expires = "Навсегда"
 
     elif get_premium_active(user_id):
+
         status = "🟢 Активен"
 
         remaining = format_duration(
@@ -691,6 +699,7 @@ def profile_text(user_id: int) -> str:
         )
 
     else:
+
         status = "⚪ Не активен"
         remaining = "—"
         expires = "—"
@@ -720,12 +729,16 @@ Username: {normalize_username(user["username"])}
 
 
 @dp.callback_query(F.data == "profile")
-async def profile_callback(callback: CallbackQuery):
+async def profile_callback(
+    callback: CallbackQuery
+):
     ensure_user(
         callback.from_user.id,
         callback.from_user.username,
         callback.from_user.first_name
     )
+
+    await callback.answer()
 
     builder = InlineKeyboardBuilder()
 
@@ -736,8 +749,6 @@ async def profile_callback(callback: CallbackQuery):
         )
     )
 
-    await callback.answer()
-
     await callback.message.answer(
         profile_text(
             callback.from_user.id
@@ -747,7 +758,9 @@ async def profile_callback(callback: CallbackQuery):
 
 
 @dp.message(F.text == "👤 Профиль")
-async def profile_message(message: Message):
+async def profile_message(
+    message: Message
+):
     ensure_user(
         message.from_user.id,
         message.from_user.username,
@@ -764,6 +777,20 @@ async def profile_message(message: Message):
 # ============================================================
 # CONNECTION
 # ============================================================
+
+CONNECT_TEXT = """
+<b>🔗 Подключение</b>
+
+1. Откройте настройки Telegram.
+2. Откройте свой профиль.
+3. Нажмите <b>«Изменить»</b>.
+4. Откройте <b>«Автоматизация чатов»</b>.
+5. Найдите <code>@SpyNeScamBot</code>.
+6. Добавьте бота и выдайте необходимые разрешения.
+
+После этого мониторинг начнёт работать автоматически.
+"""
+
 
 def connect_keyboard():
     builder = InlineKeyboardBuilder()
@@ -785,22 +812,10 @@ def connect_keyboard():
     return builder.as_markup()
 
 
-CONNECT_TEXT = """
-<b>🔗 Подключение</b>
-
-1. Откройте настройки Telegram.
-2. Откройте свой профиль.
-3. Нажмите <b>«Изменить»</b>.
-4. Откройте <b>«Автоматизация чатов»</b>.
-5. Найдите <code>@SpyNeScamBot</code>.
-6. Добавьте бота и выдайте необходимые разрешения.
-
-После этого мониторинг начнёт работать автоматически.
-"""
-
-
 @dp.callback_query(F.data == "connect")
-async def connect_callback(callback: CallbackQuery):
+async def connect_callback(
+    callback: CallbackQuery
+):
     await callback.answer()
 
     await callback.message.answer(
@@ -810,7 +825,9 @@ async def connect_callback(callback: CallbackQuery):
 
 
 @dp.message(F.text == "🔗 Подключение")
-async def connect_message(message: Message):
+async def connect_message(
+    message: Message
+):
     await message.answer(
         CONNECT_TEXT,
         reply_markup=connect_keyboard()
@@ -818,8 +835,30 @@ async def connect_message(message: Message):
 
 
 # ============================================================
-# PREMIUM UI
+# PREMIUM MENU
 # ============================================================
+
+def premium_text(user_id: int) -> str:
+    if has_discount(user_id):
+
+        return """
+<b>⭐ Premium</b>
+
+Расширенный доступ к мониторингу.
+
+🏷 <b>Скидка 10% активна</b>
+
+Выберите период:
+"""
+
+    return """
+<b>⭐ Premium</b>
+
+Расширенный доступ к мониторингу.
+
+Выберите период:
+"""
+
 
 def premium_keyboard():
     builder = InlineKeyboardBuilder()
@@ -869,23 +908,10 @@ def premium_keyboard():
     return builder.as_markup()
 
 
-def premium_text(user_id: int) -> str:
-    discount = has_discount(user_id)
-
-    return f"""
-<b>⭐ Premium</b>
-
-Расширенный доступ к функциям
-мониторинга.
-
-{"🏷 Скидка 10% активна" if discount else ""}
-
-Выберите период:
-"""
-
-
 @dp.callback_query(F.data == "premium")
-async def premium_callback(callback: CallbackQuery):
+async def premium_callback(
+    callback: CallbackQuery
+):
     ensure_user(
         callback.from_user.id,
         callback.from_user.username,
@@ -903,7 +929,9 @@ async def premium_callback(callback: CallbackQuery):
 
 
 @dp.message(F.text == "⭐ Premium")
-async def premium_message(message: Message):
+async def premium_message(
+    message: Message
+):
     ensure_user(
         message.from_user.id,
         message.from_user.username,
@@ -936,8 +964,13 @@ def payment_keyboard(price: int):
 
 
 @dp.callback_query(F.data.startswith("buy:"))
-async def buy_plan(callback: CallbackQuery):
-    plan_key = callback.data.split(":", 1)[1]
+async def buy_plan(
+    callback: CallbackQuery
+):
+    plan_key = callback.data.split(
+        ":",
+        1
+    )[1]
 
     if plan_key not in PLANS:
         await callback.answer(
@@ -969,6 +1002,7 @@ async def buy_plan(callback: CallbackQuery):
     await callback.answer()
 
     try:
+
         await bot.send_invoice(
             chat_id=callback.from_user.id,
             title=f"Premium — {plan['name']}",
@@ -993,6 +1027,7 @@ async def buy_plan(callback: CallbackQuery):
         )
 
     except Exception as e:
+
         print(
             "SEND INVOICE ERROR:",
             repr(e)
@@ -1009,15 +1044,20 @@ async def pre_checkout_handler(
     pre_checkout_query
 ):
     try:
-        payload = pre_checkout_query.invoice_payload
+
+        payload = (
+            pre_checkout_query.invoice_payload
+        )
 
         parts = payload.split(":")
 
         if len(parts) != 4:
+
             await pre_checkout_query.answer(
                 ok=False,
                 error_message="Некорректный счёт."
             )
+
             return
 
         prefix = parts[0]
@@ -1025,24 +1065,30 @@ async def pre_checkout_handler(
         user_id = int(parts[2])
 
         if prefix != "premium":
+
             await pre_checkout_query.answer(
                 ok=False,
                 error_message="Некорректный платёж."
             )
+
             return
 
         if user_id != pre_checkout_query.from_user.id:
+
             await pre_checkout_query.answer(
                 ok=False,
                 error_message="Платёж принадлежит другому пользователю."
             )
+
             return
 
         if plan_key not in PLANS:
+
             await pre_checkout_query.answer(
                 ok=False,
                 error_message="План больше недоступен."
             )
+
             return
 
         expected_price = discounted_price(
@@ -1052,12 +1098,15 @@ async def pre_checkout_handler(
 
         if (
             pre_checkout_query.currency != "XTR"
-            or pre_checkout_query.total_amount != expected_price
+            or
+            pre_checkout_query.total_amount != expected_price
         ):
+
             await pre_checkout_query.answer(
                 ok=False,
                 error_message="Сумма платежа изменилась."
             )
+
             return
 
         await pre_checkout_query.answer(
@@ -1065,16 +1114,19 @@ async def pre_checkout_handler(
         )
 
     except Exception as e:
+
         print(
             "PRECHECKOUT ERROR:",
             repr(e)
         )
 
         try:
+
             await pre_checkout_query.answer(
                 ok=False,
                 error_message="Ошибка проверки платежа."
             )
+
         except Exception:
             pass
 
@@ -1117,9 +1169,10 @@ async def successful_payment_handler(
     if plan_key not in PLANS:
         return
 
-    charge_id = payment.telegram_payment_charge_id
+    charge_id = (
+        payment.telegram_payment_charge_id
+    )
 
-    # Защита от повторной обработки
     existing = db.execute("""
         SELECT id
         FROM payments
@@ -1185,15 +1238,13 @@ async def successful_payment_handler(
 
 📅 Действует до:
 <b>{format_datetime(user["premium_until"])}</b>
-
-Спасибо за покупку.
 """,
         reply_markup=bottom_menu()
     )
 
 
 # ============================================================
-# PROMO UI
+# PROMO MENU
 # ============================================================
 
 def promo_keyboard():
@@ -1217,15 +1268,16 @@ def promo_keyboard():
 
 
 @dp.callback_query(F.data == "promo")
-async def promo_callback(callback: CallbackQuery):
+async def promo_callback(
+    callback: CallbackQuery
+):
     await callback.answer()
 
     await callback.message.answer(
         """
 <b>🎟 Промокод</b>
 
-Если у вас есть промокод,
-введите его следующим сообщением.
+Введите промокод следующим сообщением.
 """,
         reply_markup=promo_keyboard()
     )
@@ -1238,20 +1290,139 @@ async def promo_enter_callback(
 ):
     await callback.answer()
 
+    await state.clear()
+
     await state.set_state(
         PromoStates.waiting_code
     )
+
+    # ВАЖНО:
+    # admin_create здесь НЕ устанавливаем.
+    # Значит следующий текст будет обычной
+    # активацией промокода.
 
     await callback.message.answer(
         "Введите промокод:"
     )
 
 
-@dp.message(PromoStates.waiting_code)
+# ============================================================
+# PROMO INPUT
+# ============================================================
+
+@dp.message(
+    PromoStates.waiting_code,
+    F.text
+)
 async def promo_code_handler(
     message: Message,
     state: FSMContext
 ):
+    data = await state.get_data()
+
+    # ========================================================
+    # ЕСЛИ ЭТО АДМИН СОЗДАЁТ НОВЫЙ ПРОМОКОД
+    # ========================================================
+
+    if data.get("admin_create"):
+
+        if not is_admin(
+            message.from_user.id
+        ):
+            await state.clear()
+            return
+
+        code = message.text.strip().upper()
+
+        if not code:
+
+            await message.answer(
+                "❌ Промокод не может быть пустым."
+            )
+
+            return
+
+        if len(code) > 32:
+
+            await message.answer(
+                "❌ Максимальная длина — 32 символа."
+            )
+
+            return
+
+        # Проверяем, не является ли он системным
+        if code in LEGACY_PROMOS:
+
+            await message.answer(
+                "❌ Это системный промокод.\n\n"
+                "Придумайте другое название."
+            )
+
+            return
+
+        # Проверяем только существование,
+        # но НЕ пытаемся активировать код.
+        exists = db.execute("""
+            SELECT code
+            FROM promo_codes
+            WHERE code = ?
+            LIMIT 1
+        """, (
+            code,
+        )).fetchone()
+
+        if exists:
+
+            await message.answer(
+                "❌ Такой промокод уже существует.\n\n"
+                "Введите другое название:"
+            )
+
+            return
+
+        # Сохраняем название создаваемого промокода
+        await state.update_data(
+            promo_code=code
+        )
+
+        await state.set_state(
+            PromoStates.waiting_type
+        )
+
+        builder = InlineKeyboardBuilder()
+
+        builder.row(
+            InlineKeyboardButton(
+                text="🎁 Бесплатный Premium",
+                callback_data="admin:promotype:free"
+            )
+        )
+
+        builder.row(
+            InlineKeyboardButton(
+                text="🏷 Скидка",
+                callback_data="admin:promotype:discount"
+            )
+        )
+
+        await message.answer(
+            f"""
+<b>🎟 Создание промокода</b>
+
+Код:
+<code>{code}</code>
+
+Выберите тип:
+""",
+            reply_markup=builder.as_markup()
+        )
+
+        return
+
+    # ========================================================
+    # ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ
+    # ========================================================
+
     code = message.text.strip().upper()
 
     ensure_user(
@@ -1260,10 +1431,7 @@ async def promo_code_handler(
         message.from_user.first_name
     )
 
-    # --------------------------------------------------------
-    # Проверка повторного использования
-    # --------------------------------------------------------
-
+    # Один и тот же промокод нельзя использовать дважды
     used = db.execute("""
         SELECT id
         FROM promo_uses
@@ -1276,79 +1444,82 @@ async def promo_code_handler(
     )).fetchone()
 
     if used:
+
         await state.clear()
 
         await message.answer(
             "❌ Вы уже использовали этот промокод."
         )
+
         return
 
-    # --------------------------------------------------------
-    # Legacy promos
-    # --------------------------------------------------------
+    # ========================================================
+    # N1
+    # ========================================================
 
-    if code in LEGACY_PROMOS:
+    if code == "N1":
 
-        promo = LEGACY_PROMOS[code]
+        async with db_lock:
 
-        # N1
-        if code == "N1":
+            db.execute(
+                "BEGIN IMMEDIATE"
+            )
 
-            async with db_lock:
+            try:
 
-                db.execute("BEGIN IMMEDIATE")
+                used_count = db.execute("""
+                    SELECT COUNT(*)
+                    FROM promo_uses
+                    WHERE promo_code = ?
+                """, (
+                    code,
+                )).fetchone()[0]
 
-                try:
-                    used_count = db.execute("""
-                        SELECT COUNT(*)
-                        FROM promo_uses
-                        WHERE promo_code = ?
-                    """, (
-                        code,
-                    )).fetchone()[0]
+                if used_count >= 25:
 
-                    if used_count >= 25:
-                        db.rollback()
-
-                        await state.clear()
-
-                        await message.answer(
-                            "❌ Промокод закончился."
-                        )
-                        return
-
-                    db.execute("""
-                        INSERT INTO promo_uses (
-                            user_id,
-                            promo_code,
-                            created_at
-                        )
-                        VALUES (?, ?, ?)
-                    """, (
-                        message.from_user.id,
-                        code,
-                        now_ts()
-                    ))
-
-                    db.commit()
-
-                except Exception:
                     db.rollback()
-                    raise
 
-            activate_premium_days(
-                message.from_user.id,
-                7
-            )
+                    await state.clear()
 
-            await state.clear()
+                    await message.answer(
+                        "❌ Промокод закончился."
+                    )
 
-            user = get_user(
-                message.from_user.id
-            )
+                    return
 
-            await message.answer(
-                f"""
+                db.execute("""
+                    INSERT INTO promo_uses (
+                        user_id,
+                        promo_code,
+                        created_at
+                    )
+                    VALUES (?, ?, ?)
+                """, (
+                    message.from_user.id,
+                    code,
+                    now_ts()
+                ))
+
+                db.commit()
+
+            except Exception:
+
+                db.rollback()
+                raise
+
+        activate_premium_days(
+            message.from_user.id,
+            7
+        )
+
+        await state.clear()
+
+        user = get_user(
+            message.from_user.id
+        )
+
+        await message.answer(
+            f"""
 <b>🎉 Промокод активирован</b>
 
 ⭐ Premium: <b>7 дней</b>
@@ -1356,77 +1527,86 @@ async def promo_code_handler(
 📅 До:
 <b>{format_datetime(user["premium_until"])}</b>
 """
+        )
+
+        return
+
+    # ========================================================
+    # DAVE100
+    # ========================================================
+
+    if code == "DAVE100":
+
+        db.execute("""
+            INSERT INTO promo_uses (
+                user_id,
+                promo_code,
+                created_at
             )
-            return
+            VALUES (?, ?, ?)
+        """, (
+            message.from_user.id,
+            code,
+            now_ts()
+        ))
 
-        # DAVE100
-        if code == "DAVE100":
+        db.commit()
 
-            db.execute("""
-                INSERT INTO promo_uses (
-                    user_id,
-                    promo_code,
-                    created_at
-                )
-                VALUES (?, ?, ?)
-            """, (
-                message.from_user.id,
-                code,
-                now_ts()
-            ))
+        activate_premium_forever(
+            message.from_user.id
+        )
 
-            db.commit()
+        await state.clear()
 
-            activate_premium_forever(
-                message.from_user.id
-            )
-
-            await state.clear()
-
-            await message.answer(
-                """
+        await message.answer(
+            """
 <b>🎉 Промокод активирован</b>
 
 ⭐ Premium: <b>навсегда</b>
 """
+        )
+
+        return
+
+    # ========================================================
+    # MET200$
+    # ========================================================
+
+    if code == "MET200$":
+
+        db.execute("""
+            INSERT INTO promo_uses (
+                user_id,
+                promo_code,
+                created_at
             )
-            return
+            VALUES (?, ?, ?)
+        """, (
+            message.from_user.id,
+            code,
+            now_ts()
+        ))
 
-        # MET200$
-        if code == "MET200$":
+        db.commit()
 
-            db.execute("""
-                INSERT INTO promo_uses (
-                    user_id,
-                    promo_code,
-                    created_at
-                )
-                VALUES (?, ?, ?)
-            """, (
-                message.from_user.id,
-                code,
-                now_ts()
-            ))
+        await state.clear()
 
-            db.commit()
-
-            await state.clear()
-
-            await message.answer(
-                """
+        await message.answer(
+            """
 <b>🎉 Промокод активирован</b>
 
 🏷 Скидка: <b>10%</b>
 
 Скидка будет применяться
-к Premium-покупкам.
+к покупкам Premium.
 """
-            )
-            return
+        )
 
-    # --------------------------------------------------------
-    # Custom promo
-    # --------------------------------------------------------
+        return
+
+    # ========================================================
+    # CUSTOM PROMO
+    # ========================================================
 
     custom = db.execute("""
         SELECT *
@@ -1439,24 +1619,30 @@ async def promo_code_handler(
     )).fetchone()
 
     if not custom:
+
         await state.clear()
 
         await message.answer(
             "❌ Промокод не найден."
         )
+
         return
 
+    # Проверяем лимит
     if (
         custom["max_uses"] is not None
         and custom["uses"] >= custom["max_uses"]
     ):
+
         await state.clear()
 
         await message.answer(
             "❌ Промокод закончился."
         )
+
         return
 
+    # Записываем использование
     db.execute("""
         INSERT INTO promo_uses (
             user_id,
@@ -1482,7 +1668,7 @@ async def promo_code_handler(
 
     await state.clear()
 
-    # Бесплатный
+    # Бесплатный Premium
     if custom["promo_type"] == "free":
 
         days = custom["premium_days"]
@@ -1527,21 +1713,45 @@ async def promo_code_handler(
 
 
 # ============================================================
-# ADMIN COMMON
+# ADMIN PANEL
 # ============================================================
 
-def admin_only_message(message: Message) -> bool:
-    return is_admin(
-        message.from_user.id
-    )
+def admin_text() -> str:
 
+    users_count = db.execute("""
+        SELECT COUNT(*)
+        FROM users
+    """).fetchone()[0]
 
-def admin_only_callback(
-    callback: CallbackQuery
-) -> bool:
-    return is_admin(
-        callback.from_user.id
-    )
+    premium_count = db.execute("""
+        SELECT COUNT(*)
+        FROM users
+        WHERE premium_forever = 1
+           OR premium_until > ?
+    """, (
+        now_ts(),
+    )).fetchone()[0]
+
+    purchases = db.execute("""
+        SELECT COUNT(*)
+        FROM payments
+    """).fetchone()[0]
+
+    stars = db.execute("""
+        SELECT COALESCE(SUM(stars), 0)
+        FROM payments
+    """).fetchone()[0]
+
+    return f"""
+<b>🔐 Admin</b>
+
+👥 Пользователей: <b>{users_count}</b>
+⭐ Premium: <b>{premium_count}</b>
+💳 Покупок: <b>{purchases}</b>
+💰 Stars: <b>{stars}</b>
+
+Выберите действие:
+"""
 
 
 def admin_keyboard():
@@ -1586,66 +1796,23 @@ def admin_keyboard():
     return builder.as_markup()
 
 
-def admin_text() -> str:
-    users_count = db.execute("""
-        SELECT COUNT(*)
-        FROM users
-    """).fetchone()[0]
-
-    premium_count = db.execute("""
-        SELECT COUNT(*)
-        FROM users
-        WHERE premium_forever = 1
-           OR premium_until > ?
-    """, (
-        now_ts(),
-    )).fetchone()[0]
-
-    purchases = db.execute("""
-        SELECT COUNT(*)
-        FROM payments
-    """).fetchone()[0]
-
-    stars = db.execute("""
-        SELECT COALESCE(SUM(stars), 0)
-        FROM payments
-    """).fetchone()[0]
-
-    return f"""
-<b>🔐 Admin</b>
-
-👥 Пользователей: <b>{users_count}</b>
-⭐ Premium: <b>{premium_count}</b>
-💳 Покупок: <b>{purchases}</b>
-💰 Stars: <b>{stars}</b>
-
-Выберите действие:
-"""
-
-
 # ============================================================
 # ADMIN ENTRY
 # ============================================================
 
 @dp.message(
     F.text.func(
-        lambda text: text is not None
+        lambda text:
+        text is not None
         and text.strip().lower() == "dave200$"
     )
 )
-async def admin_entry_text(message: Message):
-    if not admin_only_message(message):
-        return
-
-    await message.answer(
-        admin_text(),
-        reply_markup=admin_keyboard()
-    )
-
-
-@dp.message(Command("Dave200$"))
-async def admin_entry_command(message: Message):
-    if not admin_only_message(message):
+async def admin_entry(
+    message: Message
+):
+    if not is_admin(
+        message.from_user.id
+    ):
         return
 
     await message.answer(
@@ -1655,16 +1822,49 @@ async def admin_entry_command(message: Message):
 
 
 # ============================================================
-# ADMIN — USERS
+# ADMIN HOME
 # ============================================================
 
-@dp.callback_query(F.data == "admin:users")
-async def admin_users(callback: CallbackQuery):
-    if not admin_only_callback(callback):
+@dp.callback_query(F.data == "admin:home")
+async def admin_home(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
+        return
+
+    await callback.answer()
+
+    await callback.message.answer(
+        admin_text(),
+        reply_markup=admin_keyboard()
+    )
+
+
+# ============================================================
+# ADMIN USERS
+# ============================================================
+
+@dp.callback_query(F.data == "admin:users")
+async def admin_users(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
         return
 
     await callback.answer()
@@ -1677,21 +1877,31 @@ async def admin_users(callback: CallbackQuery):
     """).fetchall()
 
     if not rows:
-        text = "👥 Пользователей пока нет."
+
+        text = (
+            "<b>👥 Пользователи</b>\n\n"
+            "Пользователей пока нет."
+        )
+
     else:
+
         lines = [
-            "<b>👥 Последние пользователи</b>",
+            "<b>👥 Пользователи</b>",
             ""
         ]
 
         for user in rows:
+
             if user["premium_forever"]:
                 premium = "♾"
+
             elif (
                 user["premium_until"]
-                and user["premium_until"] > now_ts()
+                and
+                user["premium_until"] > now_ts()
             ):
                 premium = "🟢"
+
             else:
                 premium = "⚪"
 
@@ -1730,7 +1940,7 @@ async def admin_users(callback: CallbackQuery):
 
 
 # ============================================================
-# ADMIN — FIND USER
+# ADMIN FIND
 # ============================================================
 
 @dp.callback_query(F.data == "admin:find")
@@ -1738,11 +1948,15 @@ async def admin_find(
     callback: CallbackQuery,
     state: FSMContext
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
@@ -1756,33 +1970,42 @@ async def admin_find(
     )
 
 
-@dp.message(AdminSearchStates.waiting_user_id)
+@dp.message(
+    AdminSearchStates.waiting_user_id
+)
 async def admin_find_user(
     message: Message,
     state: FSMContext
 ):
-    if not admin_only_message(message):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await state.clear()
         return
 
     try:
+
         user_id = int(
             message.text.strip()
         )
+
     except ValueError:
+
         await message.answer(
             "❌ ID должен состоять из цифр."
         )
+
         return
 
     await state.clear()
 
-    user = get_user(user_id)
+    if not get_user(user_id):
 
-    if not user:
         await message.answer(
             "❌ Пользователь не найден."
         )
+
         return
 
     await send_admin_user_card(
@@ -1798,21 +2021,28 @@ async def send_admin_user_card(
     user = get_user(user_id)
 
     if not user:
+
         await message.answer(
             "❌ Пользователь не найден."
         )
+
         return
 
     if user["premium_forever"]:
+
         status = "♾ Навсегда"
+
     elif get_premium_active(user_id):
+
         status = (
             "🟢 "
             + format_datetime(
                 user["premium_until"]
             )
         )
+
     else:
+
         status = "⚪ Нет Premium"
 
     payments_count = db.execute("""
@@ -1861,7 +2091,7 @@ Stars: ⭐ {user["stars_spent"]}
 
 
 # ============================================================
-# ADMIN — ADD PREMIUM
+# ADMIN ADD PREMIUM
 # ============================================================
 
 @dp.callback_query(F.data == "admin:add")
@@ -1869,11 +2099,15 @@ async def admin_add(
     callback: CallbackQuery,
     state: FSMContext
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
@@ -1886,7 +2120,7 @@ async def admin_add(
         """
 <b>➕ Выдать Premium</b>
 
-Введите Telegram ID пользователя:
+Введите Telegram ID:
 """
     )
 
@@ -1898,11 +2132,15 @@ async def admin_add_existing(
     callback: CallbackQuery,
     state: FSMContext
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     user_id = int(
@@ -1912,9 +2150,11 @@ async def admin_add_existing(
     await callback.answer()
 
     if not get_user(user_id):
+
         await callback.message.answer(
             "❌ Пользователь не найден."
         )
+
         return
 
     await state.set_state(
@@ -1929,9 +2169,7 @@ async def admin_add_existing(
         """
 <b>➕ Выдать Premium</b>
 
-Введите срок.
-
-Примеры:
+Введите срок:
 
 <code>7 дней</code>
 <code>30 дней</code>
@@ -1941,23 +2179,32 @@ async def admin_add_existing(
     )
 
 
-@dp.message(AdminStates.waiting_user_id)
+@dp.message(
+    AdminStates.waiting_user_id
+)
 async def admin_add_user_id(
     message: Message,
     state: FSMContext
 ):
-    if not admin_only_message(message):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await state.clear()
         return
 
     try:
+
         user_id = int(
             message.text.strip()
         )
+
     except ValueError:
+
         await message.answer(
             "❌ Неверный Telegram ID."
         )
+
         return
 
     ensure_user(
@@ -1978,12 +2225,11 @@ async def admin_add_user_id(
         """
 <b>Срок Premium</b>
 
-Напишите, например:
+Например:
 
 <code>7 дней</code>
 <code>30 дней</code>
 <code>12 часов</code>
-<code>2 часа</code>
 """
     )
 
@@ -2015,12 +2261,17 @@ def parse_duration(text: str):
     return None
 
 
-@dp.message(AdminStates.waiting_duration)
+@dp.message(
+    AdminStates.waiting_duration
+)
 async def admin_add_duration(
     message: Message,
     state: FSMContext
 ):
-    if not admin_only_message(message):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await state.clear()
         return
 
@@ -2029,10 +2280,12 @@ async def admin_add_duration(
     )
 
     if not seconds or seconds <= 0:
+
         await message.answer(
             "❌ Не удалось понять срок.\n\n"
-            "Пример: <code>7 дней</code>"
+            "Например: <code>7 дней</code>"
         )
+
         return
 
     data = await state.get_data()
@@ -2042,34 +2295,38 @@ async def admin_add_duration(
     )
 
     if not user_id:
+
         await state.clear()
         return
 
     user = get_user(user_id)
 
     if not user:
+
         await state.clear()
 
         await message.answer(
             "❌ Пользователь не найден."
         )
+
         return
 
-    # Если навсегда — оставляем навсегда
     if user["premium_forever"]:
+
         await state.clear()
 
         await message.answer(
             "ℹ️ У пользователя уже Premium навсегда."
         )
+
         return
 
     current = user["premium_until"] or 0
 
-    new_until = max(
-        current,
-        now_ts()
-    ) + seconds
+    new_until = (
+        max(current, now_ts())
+        + seconds
+    )
 
     db.execute("""
         UPDATE users
@@ -2107,18 +2364,19 @@ async def admin_add_duration(
         f"""
 <b>✅ Premium выдан</b>
 
-Пользователь:
+ID:
 <code>{user_id}</code>
 
 Добавлено:
 <b>{message.text}</b>
 
-До:
+Действует до:
 <b>{format_datetime(new_until)}</b>
 """
     )
 
     try:
+
         await bot.send_message(
             user_id,
             f"""
@@ -2131,12 +2389,13 @@ async def admin_add_duration(
 <b>{format_datetime(new_until)}</b>
 """
         )
+
     except Exception:
         pass
 
 
 # ============================================================
-# ADMIN — REMOVE PREMIUM
+# ADMIN REMOVE
 # ============================================================
 
 @dp.callback_query(F.data == "admin:remove")
@@ -2144,11 +2403,15 @@ async def admin_remove(
     callback: CallbackQuery,
     state: FSMContext
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
@@ -2161,7 +2424,7 @@ async def admin_remove(
         """
 <b>➖ Снять Premium</b>
 
-Введите Telegram ID пользователя:
+Введите Telegram ID:
 """
     )
 
@@ -2172,11 +2435,15 @@ async def admin_remove(
 async def admin_remove_existing(
     callback: CallbackQuery
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     user_id = int(
@@ -2185,15 +2452,17 @@ async def admin_remove_existing(
 
     await callback.answer()
 
-    user = get_user(user_id)
+    if not get_user(user_id):
 
-    if not user:
         await callback.message.answer(
             "❌ Пользователь не найден."
         )
+
         return
 
-    remove_premium(user_id)
+    remove_premium(
+        user_id
+    )
 
     db.execute("""
         INSERT INTO admin_actions (
@@ -2218,48 +2487,61 @@ async def admin_remove_existing(
         f"""
 <b>✅ Premium снят</b>
 
-Пользователь:
+ID:
 <code>{user_id}</code>
 """
     )
 
     try:
+
         await bot.send_message(
             user_id,
             "⚪ Ваш Premium был отключён."
         )
+
     except Exception:
         pass
 
 
-@dp.message(AdminStates.waiting_remove_user_id)
+@dp.message(
+    AdminStates.waiting_remove_user_id
+)
 async def admin_remove_user_id(
     message: Message,
     state: FSMContext
 ):
-    if not admin_only_message(message):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await state.clear()
         return
 
     try:
+
         user_id = int(
             message.text.strip()
         )
+
     except ValueError:
+
         await message.answer(
             "❌ Неверный Telegram ID."
         )
+
         return
 
-    user = get_user(user_id)
+    if not get_user(user_id):
 
-    if not user:
         await message.answer(
             "❌ Пользователь не найден."
         )
+
         return
 
-    remove_premium(user_id)
+    remove_premium(
+        user_id
+    )
 
     db.execute("""
         INSERT INTO admin_actions (
@@ -2292,27 +2574,33 @@ ID:
     )
 
     try:
+
         await bot.send_message(
             user_id,
             "⚪ Ваш Premium был отключён."
         )
+
     except Exception:
         pass
 
 
 # ============================================================
-# ADMIN — PAYMENTS
+# ADMIN PAYMENTS
 # ============================================================
 
 @dp.callback_query(F.data == "admin:payments")
 async def admin_payments(
     callback: CallbackQuery
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
@@ -2330,14 +2618,21 @@ async def admin_payments(
     """).fetchall()
 
     if not rows:
-        text = "<b>💳 Покупки</b>\n\nПокупок пока нет."
+
+        text = (
+            "<b>💳 Покупки</b>\n\n"
+            "Покупок пока нет."
+        )
+
     else:
+
         lines = [
             "<b>💳 Последние покупки</b>",
             ""
         ]
 
         for row in rows:
+
             plan = PLANS.get(
                 row["plan"],
                 {}
@@ -2374,18 +2669,22 @@ async def admin_payments(
 
 
 # ============================================================
-# ADMIN — STATS
+# ADMIN STATS
 # ============================================================
 
 @dp.callback_query(F.data == "admin:stats")
 async def admin_stats(
     callback: CallbackQuery
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
@@ -2463,18 +2762,22 @@ async def admin_stats(
 
 
 # ============================================================
-# ADMIN — PROMOS
+# ADMIN PROMOS
 # ============================================================
 
 @dp.callback_query(F.data == "admin:promos")
 async def admin_promos(
     callback: CallbackQuery
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
@@ -2491,17 +2794,23 @@ async def admin_promos(
     ]
 
     if not rows:
+
         lines.append(
             "Пользовательских промокодов пока нет."
         )
+
     else:
+
         for row in rows:
 
             if row["promo_type"] == "free":
+
                 details = (
                     f"🎁 {row['premium_days']} дней"
                 )
+
             else:
+
                 details = (
                     f"🏷 {row['discount_percent']}%"
                 )
@@ -2519,7 +2828,8 @@ async def admin_promos(
             )
 
             lines.append(
-                f"{status} <code>{row['code']}</code>\n"
+                f"{status} "
+                f"<code>{row['code']}</code>\n"
                 f"{details} · "
                 f"{row['uses']} / {limit}"
             )
@@ -2534,6 +2844,7 @@ async def admin_promos(
     )
 
     if rows:
+
         builder.row(
             InlineKeyboardButton(
                 text="🔴 Отключить промокод",
@@ -2555,7 +2866,7 @@ async def admin_promos(
 
 
 # ============================================================
-# ADMIN — CREATE PROMO
+# ADMIN CREATE PROMO
 # ============================================================
 
 @dp.callback_query(F.data == "admin:createpromo")
@@ -2563,117 +2874,52 @@ async def admin_create_promo(
     callback: CallbackQuery,
     state: FSMContext
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
 
-    await state.set_state(
-        PromoStates.waiting_code
-    )
+    await state.clear()
 
+    # Очень важно:
+    # ставим специальный флаг,
+    # чтобы waiting_code понимал,
+    # что сейчас создаётся новый код.
     await state.update_data(
         admin_create=True
+    )
+
+    await state.set_state(
+        PromoStates.waiting_code
     )
 
     await callback.message.answer(
         """
 <b>🎟 Новый промокод</b>
 
-Введите название.
+Введите название нового промокода.
 
 Например:
 
 <code>SUMMER50</code>
+
+Он ещё не должен существовать —
+мы как раз его создаём.
 """
     )
 
 
-@dp.message(
-    PromoStates.waiting_code,
-    F.text
-)
-async def admin_promo_code(
-    message: Message,
-    state: FSMContext
-):
-    data = await state.get_data()
-
-    # Если это обычная активация промокода
-    if not data.get("admin_create"):
-        return
-
-    if not admin_only_message(message):
-        await state.clear()
-        return
-
-    code = message.text.strip().upper()
-
-    if not code:
-        await message.answer(
-            "❌ Код не может быть пустым."
-        )
-        return
-
-    if len(code) > 32:
-        await message.answer(
-            "❌ Максимум 32 символа."
-        )
-        return
-
-    if code in LEGACY_PROMOS:
-        await message.answer(
-            "❌ Это системный промокод."
-        )
-        return
-
-    exists = db.execute("""
-        SELECT code
-        FROM promo_codes
-        WHERE code = ?
-    """, (
-        code,
-    )).fetchone()
-
-    if exists:
-        await message.answer(
-            "❌ Такой промокод уже существует."
-        )
-        return
-
-    await state.update_data(
-        promo_code=code
-    )
-
-    await state.set_state(
-        PromoStates.waiting_type
-    )
-
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🎁 Бесплатный Premium",
-            callback_data="admin:promotype:free"
-        )
-    )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🏷 Скидка",
-            callback_data="admin:promotype:discount"
-        )
-    )
-
-    await message.answer(
-        "<b>Выберите тип промокода:</b>",
-        reply_markup=builder.as_markup()
-    )
-
+# ============================================================
+# ADMIN PROMO TYPE
+# ============================================================
 
 @dp.callback_query(
     F.data.startswith("admin:promotype:")
@@ -2682,16 +2928,32 @@ async def admin_promo_type(
     callback: CallbackQuery,
     state: FSMContext
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
-    promo_type = callback.data.split(":")[2]
+    promo_type = callback.data.split(
+        ":"
+    )[2]
 
     await callback.answer()
+
+    data = await state.get_data()
+
+    if not data.get("admin_create"):
+
+        await callback.message.answer(
+            "❌ Сессия создания промокода истекла."
+        )
+
+        return
 
     await state.update_data(
         promo_type=promo_type
@@ -2707,7 +2969,7 @@ async def admin_promo_type(
             """
 <b>🏷 Скидка</b>
 
-Введите процент.
+Введите размер скидки в процентах.
 
 Например:
 
@@ -2725,38 +2987,53 @@ async def admin_promo_type(
             """
 <b>🎁 Бесплатный Premium</b>
 
-Введите срок в днях.
+Введите срок Premium в днях.
 
 Например:
 
-<code>7</code>
+<code>30</code>
 """
         )
 
 
-@dp.message(PromoStates.waiting_value)
+# ============================================================
+# ADMIN PROMO DISCOUNT
+# ============================================================
+
+@dp.message(
+    PromoStates.waiting_value
+)
 async def admin_promo_discount(
     message: Message,
     state: FSMContext
 ):
-    if not admin_only_message(message):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await state.clear()
         return
 
     try:
+
         discount = int(
             message.text.strip()
         )
+
     except ValueError:
+
         await message.answer(
             "❌ Введите число."
         )
+
         return
 
     if discount < 1 or discount > 100:
+
         await message.answer(
             "❌ Процент должен быть от 1 до 100."
         )
+
         return
 
     await state.update_data(
@@ -2769,7 +3046,7 @@ async def admin_promo_discount(
 
     await message.answer(
         """
-<b>Срок действия Premium</b>
+<b>⏳ Срок Premium</b>
 
 Введите количество дней.
 
@@ -2780,29 +3057,44 @@ async def admin_promo_discount(
     )
 
 
-@dp.message(PromoStates.waiting_days)
+# ============================================================
+# ADMIN PROMO DAYS
+# ============================================================
+
+@dp.message(
+    PromoStates.waiting_days
+)
 async def admin_promo_days(
     message: Message,
     state: FSMContext
 ):
-    if not admin_only_message(message):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await state.clear()
         return
 
     try:
+
         days = int(
             message.text.strip()
         )
+
     except ValueError:
+
         await message.answer(
             "❌ Введите количество дней."
         )
+
         return
 
     if days <= 0 or days > 3650:
+
         await message.answer(
             "❌ Срок должен быть от 1 до 3650 дней."
         )
+
         return
 
     await state.update_data(
@@ -2815,9 +3107,9 @@ async def admin_promo_days(
 
     await message.answer(
         """
-<b>Количество активаций</b>
+<b>🔢 Количество активаций</b>
 
-Введите число.
+Введите количество использований.
 
 Например:
 
@@ -2827,51 +3119,85 @@ async def admin_promo_days(
 
 <code>0</code>
 
-если активации не ограничены.
+если количество не ограничено.
 """
     )
 
 
-@dp.message(PromoStates.waiting_max_uses)
+# ============================================================
+# ADMIN PROMO MAX USES
+# ============================================================
+
+@dp.message(
+    PromoStates.waiting_max_uses
+)
 async def admin_promo_max_uses(
     message: Message,
     state: FSMContext
 ):
-    if not admin_only_message(message):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await state.clear()
         return
 
     try:
+
         max_uses = int(
             message.text.strip()
         )
+
     except ValueError:
+
         await message.answer(
             "❌ Введите число."
         )
+
         return
 
     if max_uses < 0:
+
         await message.answer(
             "❌ Число не может быть отрицательным."
         )
+
         return
 
     data = await state.get_data()
 
-    code = data["promo_code"]
-    promo_type = data["promo_type"]
-    days = data["days"]
+    code = data.get(
+        "promo_code"
+    )
+
+    promo_type = data.get(
+        "promo_type"
+    )
+
+    days = data.get(
+        "days"
+    )
 
     discount = data.get(
         "discount",
         0
     )
 
-    if max_uses == 0:
-        max_uses_db = None
-    else:
-        max_uses_db = max_uses
+    if not code or not promo_type or not days:
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Ошибка создания промокода. Начните заново."
+        )
+
+        return
+
+    max_uses_db = (
+        None
+        if max_uses == 0
+        else max_uses
+    )
 
     db.execute("""
         INSERT INTO promo_codes (
@@ -2901,10 +3227,13 @@ async def admin_promo_max_uses(
     await state.clear()
 
     if promo_type == "free":
+
         type_text = (
             f"🎁 Бесплатный Premium · {days} дней"
         )
+
     else:
+
         type_text = (
             f"🏷 Скидка · {discount}%"
         )
@@ -2927,23 +3256,32 @@ async def admin_promo_max_uses(
 
 Активаций:
 <b>0 / {limit_text}</b>
+
+Теперь этот промокод доступен
+всем пользователям бота.
 """
     )
 
 
 # ============================================================
-# ADMIN — DISABLE PROMO
+# ADMIN DISABLE PROMO
 # ============================================================
 
-@dp.callback_query(F.data == "admin:disablepromo")
+@dp.callback_query(
+    F.data == "admin:disablepromo"
+)
 async def admin_disable_promo(
     callback: CallbackQuery
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.answer()
@@ -2956,14 +3294,17 @@ async def admin_disable_promo(
     """).fetchall()
 
     if not rows:
+
         await callback.message.answer(
             "Нет активных пользовательских промокодов."
         )
+
         return
 
     builder = InlineKeyboardBuilder()
 
     for row in rows:
+
         builder.row(
             InlineKeyboardButton(
                 text=f"🔴 {row['code']}",
@@ -2992,11 +3333,15 @@ async def admin_disable_promo(
 async def admin_disable_selected(
     callback: CallbackQuery
 ):
-    if not admin_only_callback(callback):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     code = callback.data.split(
@@ -3024,29 +3369,6 @@ async def admin_disable_selected(
 
 <code>{code}</code>
 """
-    )
-
-
-# ============================================================
-# ADMIN HOME
-# ============================================================
-
-@dp.callback_query(F.data == "admin:home")
-async def admin_home(
-    callback: CallbackQuery
-):
-    if not admin_only_callback(callback):
-        await callback.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-        return
-
-    await callback.answer()
-
-    await callback.message.answer(
-        admin_text(),
-        reply_markup=admin_keyboard()
     )
 
 
@@ -3139,18 +3461,23 @@ def save_business_message(
         message_type = "photo"
 
     elif message.document:
+
         message_type = "document"
 
     elif message.video:
+
         message_type = "video"
 
     elif message.voice:
+
         message_type = "voice"
 
     elif message.audio:
+
         message_type = "audio"
 
     elif message.sticker:
+
         message_type = "sticker"
 
     db.execute("""
@@ -3221,18 +3548,20 @@ async def business_message_handler(
         return
 
     try:
+
         save_business_message(
             message
         )
 
     except Exception as e:
+
         print(
             "SAVE BUSINESS MESSAGE ERROR:",
             repr(e)
         )
+
         return
 
-    # Сообщения владельца не отправляем в лог
     connection = db.execute("""
         SELECT user_chat_id
         FROM business_connections
@@ -3248,11 +3577,11 @@ async def business_message_handler(
 
     if (
         message.from_user
-        and message.from_user.id == owner_id
+        and
+        message.from_user.id == owner_id
     ):
         return
 
-    # Только личные чаты
     if message.chat.type != "private":
         return
 
@@ -3268,18 +3597,21 @@ async def business_message_handler(
         else "Пользователь"
     )
 
-    # Фото
+    # ========================================================
+    # PHOTO
+    # ========================================================
+
     if message.photo:
 
         if not get_premium_active(owner_id):
 
             await bot.send_message(
                 owner_id,
-                f"""
+                """
 <b>🗑 Сообщение удалено</b>
 
-Чтобы получать восстановленные сообщения,
-активируйте Premium.
+Для просмотра содержимого
+нужен Premium.
 """,
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
@@ -3310,12 +3642,15 @@ async def business_message_handler(
         )
 
         try:
+
             await bot.send_photo(
                 owner_id,
                 photo=photo.file_id,
                 caption=text
             )
+
         except Exception as e:
+
             print(
                 "SEND PHOTO ERROR:",
                 repr(e)
@@ -3323,7 +3658,10 @@ async def business_message_handler(
 
         return
 
-    # Обычный текст
+    # ========================================================
+    # TEXT
+    # ========================================================
+
     if message.text:
 
         await bot.send_message(
@@ -3362,22 +3700,20 @@ async def edited_business_message_handler(
 
     owner_id = connection["user_chat_id"]
 
-    # Сохраняем новую версию
     save_business_message(
         message
     )
 
     if (
         message.from_user
-        and message.from_user.id == owner_id
+        and
+        message.from_user.id == owner_id
     ):
         return
 
     if message.chat.type != "private":
         return
 
-    # Редактирование доступно как уведомление
-    # только пользователю с Premium
     if not get_premium_active(owner_id):
         return
 
@@ -3466,11 +3802,13 @@ async def deleted_business_messages_handler(
         if not saved:
             continue
 
-        # Сообщение владельца не логируем
         if saved["user_id"] == owner_id:
             continue
 
-        # Без Premium
+        # ====================================================
+        # NO PREMIUM
+        # ====================================================
+
         if not get_premium_active(owner_id):
 
             await bot.send_message(
@@ -3504,9 +3842,9 @@ async def deleted_business_messages_handler(
             saved["username"]
         )
 
-        # ----------------------------------------------------
-        # Deleted photo
-        # ----------------------------------------------------
+        # ====================================================
+        # PHOTO
+        # ====================================================
 
         if saved["photo_file_id"]:
 
@@ -3523,12 +3861,15 @@ async def deleted_business_messages_handler(
             )
 
             try:
+
                 await bot.send_photo(
                     owner_id,
                     photo=saved["photo_file_id"],
                     caption=text
                 )
+
             except Exception as e:
+
                 print(
                     "SEND DELETED PHOTO ERROR:",
                     repr(e)
@@ -3536,9 +3877,9 @@ async def deleted_business_messages_handler(
 
             continue
 
-        # ----------------------------------------------------
-        # Deleted text
-        # ----------------------------------------------------
+        # ====================================================
+        # TEXT
+        # ====================================================
 
         if saved["text"]:
 
@@ -3555,9 +3896,9 @@ async def deleted_business_messages_handler(
 
             continue
 
-        # ----------------------------------------------------
-        # Other
-        # ----------------------------------------------------
+        # ====================================================
+        # OTHER
+        # ====================================================
 
         await bot.send_message(
             owner_id,
@@ -3572,31 +3913,22 @@ async def deleted_business_messages_handler(
 
 
 # ============================================================
-# UNKNOWN ADMIN CALLBACK PROTECTION
-# ============================================================
-
-@dp.callback_query(
-    F.data.startswith("admin:")
-)
-async def admin_fallback(
-    callback: CallbackQuery
-):
-    if not admin_only_callback(callback):
-        await callback.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-        return
-
-
-# ============================================================
-# ERROR HANDLING
+# START BOT
 # ============================================================
 
 async def main():
-    print("===================================")
-    print("SPY BOT STARTED")
-    print("===================================")
+
+    print(
+        "==================================="
+    )
+
+    print(
+        "SPY BOT STARTED"
+    )
+
+    print(
+        "==================================="
+    )
 
     await dp.start_polling(
         bot,
